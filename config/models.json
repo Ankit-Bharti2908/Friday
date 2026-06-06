@@ -1,0 +1,18 @@
+{
+  "tiers": {
+    "fast": [
+      {"model": "ollama/llama3.1:8b", "api_base": "http://localhost:11434"},
+      {"model": "anthropic/claude-haiku-4-5-20251001"}
+    ],
+    "standard": [
+      {"model": "anthropic/claude-sonnet-4-6"},
+      {"model": "ollama/llama3.1:8b", "api_base": "http://localhost:11434"}
+    ],
+    "deep": [
+      {"model": "anthropic/claude-opus-4-8"},
+      {"model": "anthropic/claude-sonnet-4-6"}
+    ]
+  },
+  "embeddings": {"model": "ollama/nomic-embed-text", "api_base": "http://localhost:11434", "dim": 768},
+  "params": {"temperature": 0.3, "max_tokens": 2048, "timeout": 90}
+}

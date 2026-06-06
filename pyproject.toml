@@ -1,0 +1,26 @@
+[project]
+name = "friday"
+version = "0.1.0"
+description = "Personal multi-agent AI assistant — one process, SQLite + markdown."
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph>=0.4",
+    "langgraph-checkpoint-sqlite>=2.0",
+    "langchain-core>=0.3",
+    "langchain-mcp-adapters>=0.1",
+    "litellm>=1.65",
+    "python-telegram-bot>=21.0",
+    "apscheduler>=3.10",
+    "sqlite-vec>=0.1.6",
+    "aiosqlite>=0.20",
+    "python-dotenv>=1.0",
+    "pydantic>=2.7",
+    "arize-phoenix-otel>=0.9",
+    "openinference-instrumentation-litellm>=0.1",
+]
+
+[project.optional-dependencies]
+dev = ["arize-phoenix>=8.0", "pytest>=8.0"]
+
+[tool.setuptools]
+packages = ["core", "agents", "channels"]
