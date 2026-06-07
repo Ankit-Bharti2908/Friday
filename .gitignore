@@ -43,9 +43,8 @@ npm-debug.log*
 .phoenix/
 *.log
 
-# --- Claude Code runtime state ---
-.claude/scheduled_tasks.lock
-.claude/settings.local.json
+# --- Claude Code (local agent state — not part of the app) ---
+.claude/
 
 # --- OS / editor cruft ---
 .DS_Store
