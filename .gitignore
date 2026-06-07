@@ -1,0 +1,55 @@
+# --- Secrets (NEVER commit) ---
+.env
+.env.*
+!.env.example
+wa-auth/
+bridge/whatsapp/wa-auth/
+
+# --- Personal identity (real file is private; *.example.md is the template) ---
+identity/USER.md
+
+# --- The "brain": runtime state, not source ---
+friday.db
+friday.db-shm
+friday.db-wal
+*.sqlite
+*.sqlite3
+# auto-generated mirror of the DB
+memory/MEMORY.md
+# daily notes are runtime data
+memory/notes/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Node (WhatsApp bridge) ---
+bridge/whatsapp/node_modules/
+node_modules/
+npm-debug.log*
+
+# --- Observability / tooling ---
+.phoenix/
+*.log
+
+# --- Claude Code runtime state ---
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
+
+# --- OS / editor cruft ---
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

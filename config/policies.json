@@ -1,5 +1,5 @@
 {
-  "auto_allow_patterns": ["get_", "list_", "search_", "read_", "fetch_", "find_", "query_", "view_"],
+  "auto_allow_patterns": ["get_", "list_", "search_", "read_", "fetch_", "find_", "query_", "view_", "remember", "recall"],
   "require_approval_patterns": ["send_", "create_", "delete_", "update_", "write_", "post_", "move_", "edit_", "exec", "run_"],
   "blocked_tools": [],
   "default": "require_approval"

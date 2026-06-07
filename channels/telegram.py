@@ -3,18 +3,24 @@
 Security: hard allowlist — anyone who isn't TELEGRAM_OWNER_ID is silently
 ignored before any processing.
 
-Approvals: graph interrupt -> message with [Approve]/[Reject]/[Edit] inline
-buttons. Approve/Reject resume the graph directly; Edit asks for a free-text
-instruction and resumes as reject-with-feedback (the agent revises and the
-new attempt comes back for approval again).
+Approvals: graph interrupt -> [Approve]/[Reject]/[Edit] inline buttons.
+Edit = send free-text feedback; the agent revises and asks again.
+
+Voice notes: transcribed locally with faster-whisper if installed
+(`uv sync --extra voice`), then handled like text.
+
+After each completed turn, a fire-and-forget memory hook logs the turn to
+today's note and extracts durable memories (fast tier).
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import tempfile
 import uuid
+from pathlib import Path
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
@@ -27,7 +33,8 @@ from telegram.ext import (
     filters,
 )
 
-from core import settings
+from core import memory, settings
+from core.graph import last_ai_text
 
 log = logging.getLogger("friday.telegram")
 
@@ -50,7 +57,9 @@ def build_application(graph) -> Application:
     app.add_handler(CommandHandler("start", _cmd_start))
     app.add_handler(CommandHandler("new", _cmd_new))
     app.add_handler(CommandHandler("status", _cmd_status))
+    app.add_handler(CommandHandler("briefing", _cmd_briefing))
     app.add_handler(CallbackQueryHandler(_on_approval_button))
+    app.add_handler(MessageHandler(filters.VOICE, _on_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _on_message))
     return app
 
@@ -65,11 +74,13 @@ def _thread_id(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> str:
     return context.chat_data.setdefault("thread_id", f"tg:{chat_id}")
 
 
-# ---------------------------------------------------------------- handlers
+# ---------------------------------------------------------------- commands
 async def _cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update):
         return
-    await update.message.reply_text("Friday online. Talk to me. /new resets the thread, /status for vitals.")
+    await update.message.reply_text(
+        "Friday online. Talk to me — text or voice.\n/new resets the thread, /briefing on demand, /status for vitals."
+    )
 
 
 async def _cmd_new(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -90,12 +101,40 @@ async def _cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
 
+async def _cmd_briefing(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_owner(update):
+        return
+    from agents import briefing
+
+    await update.message.reply_text("On it — assembling your briefing…")
+    await briefing.run(context.bot_data["graph"])
+
+
+# ---------------------------------------------------------------- messages
 async def _on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update):
         log.warning("ignored message from non-owner user_id=%s", getattr(update.effective_user, "id", "?"))
         return
+    await _handle_text(update, context, update.message.text)
 
-    text = update.message.text
+
+async def _on_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_owner(update):
+        return
+    text = await _transcribe_voice(update, context)
+    if text is None:
+        await update.message.reply_text(
+            "Voice support needs faster-whisper: `uv sync --extra voice`, then restart me."
+        )
+        return
+    if not text.strip():
+        await update.message.reply_text("Couldn't make out any speech in that.")
+        return
+    await update.message.reply_text(f"🎤 “{text}”")
+    await _handle_text(update, context, text)
+
+
+async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
     chat_id = update.effective_chat.id
 
     # Edit flow step 2: this message is feedback for a pending approval.
@@ -104,7 +143,7 @@ async def _on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     config = {"configurable": {"thread_id": _thread_id(context, chat_id)}}
-    await _run_graph(update, context, {"messages": [HumanMessage(text)], "loops": 0}, config)
+    await _run_graph(update, context, {"messages": [HumanMessage(text)]}, config)
 
 
 async def _on_approval_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -152,7 +191,9 @@ async def _run_graph(update: Update, context: ContextTypes.DEFAULT_TYPE, payload
         await _send_long(context, chat_id, f"Approval needed:\n\n{preview}", reply_markup=_APPROVAL_KB)
         return
 
-    await _send_long(context, chat_id, _last_text(result))
+    await _send_long(context, chat_id, last_ai_text(result) or "(no reply)")
+    # Memory hook: never blocks the reply, never raises.
+    asyncio.create_task(memory.after_turn(result.get("messages", [])))
 
 
 async def _keep_typing(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
@@ -172,8 +213,32 @@ async def _send_long(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str
         await context.bot.send_message(chat_id, chunk, **(kwargs if i == len(chunks) - 1 else {}))
 
 
-def _last_text(result: dict) -> str:
-    for msg in reversed(result.get("messages", [])):
-        if isinstance(msg, AIMessage) and msg.content:
-            return msg.content if isinstance(msg.content, str) else str(msg.content)
-    return "(no reply)"
+# ------------------------------------------------------------------- voice
+_whisper_model = None
+
+
+def _load_whisper():
+    global _whisper_model
+    if _whisper_model is None:
+        from faster_whisper import WhisperModel  # raises ImportError if extra not installed
+
+        _whisper_model = WhisperModel("small", device="cpu", compute_type="int8")
+    return _whisper_model
+
+
+def _transcribe_file(path: str) -> str:
+    model = _load_whisper()
+    segments, _info = model.transcribe(path, vad_filter=True)
+    return " ".join(seg.text.strip() for seg in segments).strip()
+
+
+async def _transcribe_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str | None:
+    try:
+        _load_whisper()
+    except ImportError:
+        return None
+    voice_file = await update.message.voice.get_file()
+    with tempfile.TemporaryDirectory() as tmp:
+        path = str(Path(tmp) / "note.oga")
+        await voice_file.download_to_drive(path)
+        return await asyncio.to_thread(_transcribe_file, path)

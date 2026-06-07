@@ -1,13 +1,13 @@
-"""Friday entrypoint — one process.
+"""Friday entrypoint — one process, all phases.
 
     uv run python main.py
 
-Boot order: tracing -> db -> MCP tools -> graph (SQLite-checkpointed)
--> Telegram long polling. Ctrl+C shuts down cleanly.
+Boot: tracing -> db -> MCP tools (+ memory & sandbox tools) -> graphs
+(interactive + autonomous) -> scheduler (briefing/heartbeat/notes)
+-> Telegram polling -> optional WhatsApp bridge client.
 
-Observability: start `uv run phoenix serve` in another terminal first
-(UI at http://localhost:6006). If Phoenix isn't running, Friday still
-works — traces just have nowhere to land. Disable with FRIDAY_TRACING=0.
+Observability: start `uv run phoenix serve` in another terminal
+(UI at http://localhost:6006). Disable with FRIDAY_TRACING=0.
 """
 from __future__ import annotations
 
@@ -17,9 +17,11 @@ import signal
 
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-from core import settings
+from core import notify, scheduler, settings
 from core.db import init_db
 from core.graph import build_graph
+from core.memory import memory_tools
+from core.sandbox import sandbox_tools
 from core.tools import load_mcp_tools
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -43,18 +45,18 @@ async def amain() -> None:
     setup_tracing()
     init_db()
 
-    problems = settings.validate()
-    for p in problems:
+    for p in settings.validate():
         log.warning("config: %s", p)
     if not settings.TELEGRAM_BOT_TOKEN or not settings.TELEGRAM_OWNER_ID:
         log.error("Telegram not configured — fix .env, or use the CLI: uv run python -m channels.cli")
         return
 
-    tools = await load_mcp_tools()
+    tools = await load_mcp_tools() + memory_tools() + sandbox_tools()
 
     async with AsyncSqliteSaver.from_conn_string(str(settings.DB_PATH)) as saver:
         graph = build_graph(saver, tools)
         graph._friday_tools = tools  # for /status
+        autonomous_graph = build_graph(None, tools, autonomous=True)
 
         from channels.telegram import build_application
 
@@ -71,12 +73,23 @@ async def amain() -> None:
         await app.initialize()
         await app.start()
         await app.updater.start_polling(drop_pending_updates=True)
-        log.info("Friday is up — %d tools, talking to owner %s", len(tools), settings.TELEGRAM_OWNER_ID)
+        notify.configure(app.bot, settings.TELEGRAM_OWNER_ID)
+        sched = scheduler.start(graph, autonomous_graph)
 
-        # Phase 2 will start the APScheduler here (briefing, nightly notes).
+        wa_task = None
+        if settings.WHATSAPP_ENABLED:
+            from channels import whatsapp
+
+            wa_task = asyncio.create_task(whatsapp.run(graph))
+            log.info("whatsapp channel enabled (bridge expected at %s)", settings.WHATSAPP_WS_URL)
+
+        log.info("Friday is up — %d tools, owner %s", len(tools), settings.TELEGRAM_OWNER_ID)
         await stop.wait()
 
         log.info("shutting down…")
+        if wa_task:
+            wa_task.cancel()
+        sched.shutdown(wait=False)
         await app.updater.stop()
         await app.stop()
         await app.shutdown()

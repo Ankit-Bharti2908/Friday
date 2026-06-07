@@ -1,83 +1,101 @@
-# Friday — personal AI assistant
+# Friday — personal AI assistant (all phases)
 
-One Python process. SQLite + markdown. No Docker, no Postgres.
-Telegram in, MCP tools out, every risky action pauses for your approval,
-everything traced in Phoenix.
+One Python process. SQLite + markdown. No Docker required (except the optional
+code sandbox), no Postgres, no proxy servers.
+
+**What it does:** Telegram (text + voice) and optional WhatsApp/web gateways →
+intent router picks a specialist agent (email / calendar / coder / research /
+general) → MCP tools do the work → every risky action pauses for your
+Approve / Reject / Edit → it remembers you across sessions → 8 AM briefing,
+30-min heartbeat alerts, nightly note consolidation → everything traced in Phoenix.
 
 ## Quickstart
 
 ```bash
-# 1. deps (Python 3.11+, Node for MCP servers, Ollama optional-but-recommended)
-uv sync
-ollama pull llama3.1:8b && ollama pull nomic-embed-text   # local "fast" tier
+# 1. deps (Python 3.11+, Node for MCP servers, Ollama recommended)
+uv sync                          # + --extra voice / --extra web if wanted
+ollama pull llama3.1:8b && ollama pull nomic-embed-text
 
 # 2. secrets
-cp .env.example .env        # fill in: bot token, owner id, one LLM key
+cp .env.example .env             # bot token, owner id, one LLM key
 
-# 3. sanity check (offline, no keys needed)
+# 3. offline sanity check
 uv run python -m tests.smoke
 
-# 4. talk to it in the terminal first
+# 4. talk to it in the terminal
 uv run python -m channels.cli
 
-# 5. observability (separate terminal, optional but recommended)
-uv run phoenix serve        # UI: http://localhost:6006
+# 5. observability (separate terminal)
+uv run phoenix serve             # http://localhost:6006
 
 # 6. the real thing
-uv run python main.py       # message your bot on Telegram
+uv run python main.py            # message your bot on Telegram
 ```
 
-## Telegram setup
-1. @BotFather → /newbot → copy token into `.env` (`TELEGRAM_BOT_TOKEN`)
-2. Message @userinfobot → copy your numeric id into `.env` (`TELEGRAM_OWNER_ID`)
-3. `uv run python main.py`, then message your bot. Anyone who isn't you is ignored.
+## Channels
+- **Telegram (primary):** @BotFather token + your id from @userinfobot → `.env`.
+  Text and voice notes (voice needs `uv sync --extra voice`). /new /status /briefing.
+- **WhatsApp (optional, ToS/ban risk — secondary number recommended):**
+  `cd bridge/whatsapp && npm install && npm start`, scan the QR, set
+  `WHATSAPP_ENABLED=1` + `WHATSAPP_OWNER_JID` in `.env`. Approvals are text
+  replies (yes / no / your changes). `wa-auth/` is credential material: chmod 700.
+- **Web (optional):** `uv sync --extra web && uv run chainlit run channels/web.py`.
 
-## Adding capabilities (MCP)
-Everything Friday can *do* comes from MCP servers in `config/mcp.json`.
-Ships with `filesystem` enabled (scoped to `FRIDAY_WORKSPACE`). Two disabled
-templates are included — remove the leading `_` to enable after configuring:
+## The agentic core
+- **Router** (`core/router.py`): fast-tier classification → profile. <0.6 confidence → general.
+- **Profiles** (`agents/*.py`): tier + tool subset + instructions. New subagent = one small file.
+- **Skills** (`skills/*.md`): drop a markdown file with triggers; it's injected when matched.
+  Re-read every message — edit a skill, behavior changes immediately. Ships with
+  `email_style`, `rca_summary`, `daily_note_format`.
+- **Memory** (`core/memory.py`): SQLite + sqlite-vec is the truth, `memory/MEMORY.md` is the
+  mirror. Recall is injected each turn; a post-turn hook extracts durable facts (≥0.8
+  confidence); say "remember/forget X" for explicit control. Daily notes in `memory/notes/`,
+  consolidated nightly at 23:30.
+- **Reflection:** two consecutive tool failures trigger a forced critique-and-change-approach.
+- **Proactivity** (`core/scheduler.py`): briefing 08:00, heartbeat every 30 min 08–22 (runs
+  `identity/HEARTBEAT.md` on the read-only autonomous graph; findings deduped via `alerts_sent`
+  so nothing pings twice), quiet-hours queue flushed 07:35.
 
-- `_github_remote` — GitHub's hosted MCP; needs `GITHUB_TOKEN` (PAT) in `.env`.
-- `_google_workspace` — Gmail + Calendar via the `workspace-mcp` package
-  (`uvx workspace-mcp`). Follow that project's README for Google OAuth setup
-  (client id/secret from Google Cloud Console), then set the env vars it needs.
-  Check its docs for current flags — pin the version once it works.
+## Safety model (don't weaken these)
+1. Channel allowlists are hardcoded to you (Telegram user id, WhatsApp JID).
+2. Reads run free; `send_/create_/delete_/run_…` pause for approval; **unknown tools
+   require approval by default** (`config/policies.json`). Audit: `tool_audit` table.
+3. Background jobs use an autonomous graph that **auto-rejects** all writes.
+4. Web/email content is treated as data, not instructions (see SOUL.md rule 3).
+5. `run_python` executes in a no-network Docker container AND is approval-gated.
+6. Secrets only in `.env`; configs reference `${VAR}` names.
 
-Servers starting with `_` are skipped. Secrets never go in this file — use
-`${ENV_VAR}` references.
-
-## How approval works
-Reads (`get_/list_/search_/…`) run freely. Writes (`send_/create_/delete_/…`)
-pause the graph and ping you with Approve / Reject / Edit buttons. *Edit* =
-send free-text feedback; the agent revises and asks again. Unknown tools
-require approval by default. Rules: `config/policies.json`. Audit trail:
-`tool_audit` table in `friday.db`.
-
-## Identity
-- `identity/SOUL.md` — personality + hard rules (edit freely)
-- `identity/USER.md` — facts about you, injected every turn
-- `memory/MEMORY.md` — long-term notes (auto-curated from Phase 2)
+## MCP tools
+`config/mcp.json`, Claude-Desktop style. `filesystem` ships enabled (scoped to
+`FRIDAY_WORKSPACE`). Remove the `_` prefix to enable after configuring:
+`_github_remote` (hosted GitHub MCP, needs `GITHUB_TOKEN`) and `_google_workspace`
+(Gmail+Calendar via `workspace-mcp` — follow that project's README for OAuth, then
+pin its version). One broken server never blocks the others.
 
 ## Model tiers
-`config/models.json` defines `fast` / `standard` / `deep`, each an ordered
-[primary, …fallbacks] list in LiteLLM naming (`ollama/…`, `anthropic/…`,
-`openai/…`, `openrouter/…`). Code only ever references tiers — switching
-providers is a JSON edit. Pin models you actually have access to.
+`config/models.json`: `fast` / `standard` / `deep`, each `[primary, …fallbacks]` in
+LiteLLM naming. Router/heartbeat/extraction run on `fast` (local), research synthesis
+on `deep`. Switching providers = JSON edit.
 
-## Project layout
+## Evals & ops
+- Routing regression: `uv run python -m tests.eval_routing` (needs a live fast tier; <90% = fix prompt).
+- Offline tests: `uv run python -m tests.smoke`.
+- Backups: `scripts/backup.sh` (cron it nightly; restores = unzip).
+
+## Layout
 ```
-core/      settings · db · llm (tiers) · prompts · approval · tools (MCP) · graph
-channels/  telegram (buttons, allowlist) · cli (dev REPL)
-agents/    (Phase 2+: briefing, email, research, coder, calendar)
-identity/  SOUL.md · USER.md · HEARTBEAT.md
-memory/    MEMORY.md · notes/
-config/    models.json · mcp.json · policies.json
-tests/     smoke.py
-friday.db  checkpoints + memories + audit (auto-created)
+core/      settings · db · llm · prompts · approval · tools · graph · router · skills · memory · notify · scheduler · sandbox
+agents/    registry + profiles (email, research, coder, calendar) · briefing · heartbeat
+channels/  telegram · cli · whatsapp · web
+bridge/    whatsapp/ (Baileys Node sidecar)
+identity/  SOUL.md · USER.md · HEARTBEAT.md      skills/  *.md
+memory/    MEMORY.md (mirror) · notes/            config/  models · mcp · policies
+tests/     smoke · routing_cases · eval_routing   scripts/ backup.sh
 ```
 
 ## Troubleshooting
-- **First local-model call times out** → Ollama cold start; it warms up after one call.
-- **Google OAuth dies weekly** → consent screen is in Testing mode; publish it or re-auth.
-- **MCP server fails to load** → others still load; check the log line, fix that server's config.
-- **No traces** → is `phoenix serve` running? `FRIDAY_TRACING=0` disables cleanly.
+- First local-model call slow → Ollama cold start.
+- Google OAuth dies weekly → consent screen in Testing mode; publish or re-auth.
+- Heartbeat too chatty → cut `HEARTBEAT.md` lines; it should usually find nothing.
+- No traces → is `phoenix serve` running? `FRIDAY_TRACING=0` disables cleanly.
+- WhatsApp silent → is the bridge running and paired? Check `wa-auth/` exists.

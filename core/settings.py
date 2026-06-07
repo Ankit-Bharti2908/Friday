@@ -38,6 +38,11 @@ os.environ["FRIDAY_WORKSPACE"] = str(WORKSPACE)  # so ${FRIDAY_WORKSPACE} resolv
 
 TIMEZONE = os.getenv("FRIDAY_TZ", "Asia/Kolkata")
 
+# WhatsApp (optional; needs the bridge/whatsapp Node sidecar running)
+WHATSAPP_ENABLED: bool = os.getenv("WHATSAPP_ENABLED", "0") in ("1", "true", "yes")
+WHATSAPP_OWNER_JID: str = os.getenv("WHATSAPP_OWNER_JID", "")  # e.g. 9198xxxxxxxx@s.whatsapp.net
+WHATSAPP_WS_URL: str = os.getenv("WHATSAPP_WS_URL", "ws://127.0.0.1:8765")
+
 # --- config loading --------------------------------------------------------
 _ENV_PATTERN = re.compile(r"\$\{([A-Z0-9_]+)\}")
 

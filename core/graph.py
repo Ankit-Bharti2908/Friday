@@ -1,19 +1,18 @@
-"""The agent graph: load_context -> agent <-> (tool_gate -> tools).
+"""The agent graph (full build):
 
-Flow per turn:
-  1. agent: LLM (tier "standard" via LiteLLM) sees system prompt + history
-     + tool schemas; replies with text and/or tool calls.
-  2. tool_gate: every tool call is checked against policy.
-       - all reads            -> straight to tools
-       - anything risky       -> interrupt() pauses the WHOLE graph; the
-         channel renders Approve/Reject buttons; graph resumes with the
-         human's decision (Command(resume=...)).
-       - rejected             -> ToolMessages explain the rejection and the
-         agent gets to respond/revise (reject-with-feedback IS the edit flow).
-  3. tools: execute approved calls, append ToolMessages, loop to agent.
+  route -> agent <-> (tool_gate -> tools) -> END
 
-Checkpointed in friday.db -> conversations survive restarts; interrupts
-survive restarts too (that's what makes phone-approval reliable).
+route      classifies intent (fast tier) + recalls memories + matches skills,
+           picking the agent profile for this turn.
+agent      LLM on the profile's tier, sees SOUL/USER + memories + skills +
+           the profile's tool subset. Reflects after repeated tool failures.
+tool_gate  policy check. Risky calls: interrupt() for human approval —
+           unless the graph was built autonomous=True (background jobs),
+           where risky calls are auto-rejected instead of pausing.
+tools      executes approved calls with timeouts + output truncation.
+
+Checkpointed in friday.db: conversations AND pending approvals survive
+restarts.
 """
 from __future__ import annotations
 
@@ -35,7 +34,8 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.types import interrupt
 
-from core import approval, llm, prompts
+from agents import registry
+from core import approval, llm, memory, prompts, router, skills
 from core.db import log_tool_audit
 
 log = logging.getLogger("friday.graph")
@@ -45,15 +45,58 @@ MAX_TOOL_RESULT_CHARS = 8000   # protect the context window from giant tool outp
 MAX_AGENT_LOOPS = 12           # circuit breaker for runaway tool loops
 
 
-class FridayState(TypedDict):
+class FridayState(TypedDict, total=False):
     messages: Annotated[list[AnyMessage], add_messages]
-    gate_decision: str  # "approved" | "rejected" | ""
+    agent_name: str
+    context_block: str   # recalled memories + matched skills for this turn
+    gate_decision: str   # "approved" | "rejected" | ""
     loops: int
 
 
-def build_graph(checkpointer: Any, tools: list[BaseTool]):
+def build_graph(checkpointer: Any, tools: list[BaseTool], *, autonomous: bool = False):
     tool_map: dict[str, BaseTool] = {t.name: t for t in tools}
-    openai_tools = [convert_to_openai_tool(t) for t in tools] or None
+    schema_cache: dict[str, list[dict]] = {}
+
+    def _schemas(profile) -> list[dict] | None:
+        if profile.name not in schema_cache:
+            ptools = registry.filter_tools(profile, tools)
+            schema_cache[profile.name] = [convert_to_openai_tool(t) for t in ptools]
+        return schema_cache[profile.name] or None
+
+    # ------------------------------------------------------------------ route
+    async def route(state: FridayState) -> dict[str, Any]:
+        user_text = next(
+            (m.content for m in reversed(state["messages"]) if isinstance(m, HumanMessage)), ""
+        )
+        user_text = user_text if isinstance(user_text, str) else str(user_text)
+
+        if autonomous:
+            profile_name = "general"
+            recalled: list[str] = []
+        else:
+            context = _recent_context(state["messages"])
+            (profile_name, _), recalled = await asyncio.gather(
+                router.classify(user_text, context),
+                _recall_safe(user_text),
+            )
+
+        matched = skills.match(user_text, profile_name)
+        parts = []
+        if recalled:
+            parts.append(
+                "## Memories (things you know about the user — use naturally, never recite)\n"
+                + "\n".join(f"- {m}" for m in recalled)
+            )
+        if matched:
+            parts.append(skills.render(matched))
+
+        log.info("route -> %s (skills: %s)", profile_name, [s.name for s in matched] or "-")
+        return {
+            "agent_name": profile_name,
+            "context_block": "\n\n".join(parts),
+            "loops": 0,
+            "gate_decision": "",
+        }
 
     # ------------------------------------------------------------------ agent
     async def agent(state: FridayState) -> dict[str, Any]:
@@ -63,9 +106,23 @@ def build_graph(checkpointer: Any, tools: list[BaseTool]):
                 "loops": 0,
             }
 
-        system = {"role": "system", "content": prompts.build_system_prompt(tools)}
+        profile = registry.get(state.get("agent_name") or "general")
+        ptools = registry.filter_tools(profile, tools)
+        tier = "fast" if autonomous else profile.tier
+
+        extras = [profile.instructions, state.get("context_block", "")]
+        if autonomous:
+            extras.append(
+                "## Background mode\nYou are running unattended. Use READ-ONLY tools only; "
+                "any write/send action will be auto-rejected. Be terse."
+            )
+        reflection = _reflection_note(state["messages"])
+        if reflection:
+            extras.append(reflection)
+
+        system = {"role": "system", "content": prompts.build_system_prompt(ptools, extras=extras)}
         history = convert_to_openai_messages(_trim(state["messages"]))
-        resp = await llm.acomplete("standard", [system] + history, tools=openai_tools)
+        resp = await llm.acomplete(tier, [system] + history, tools=_schemas(profile))
         msg = resp.choices[0].message
 
         tool_calls = [
@@ -91,8 +148,22 @@ def build_graph(checkpointer: Any, tools: list[BaseTool]):
                 log_tool_audit(c["name"], "auto_allowed", c["args"])
             return {"gate_decision": "approved"}
 
-        # Pause here. On resume, this node re-runs and interrupt() returns
-        # the human's decision payload.
+        if autonomous:
+            for c in calls:
+                log_tool_audit(c["name"], "rejected_autonomous", c["args"])
+            rejections = [
+                ToolMessage(
+                    content="ACTION NOT EXECUTED — background mode allows read-only tools. "
+                    "Report the finding instead of acting on it.",
+                    tool_call_id=c["id"],
+                    name=c["name"],
+                )
+                for c in calls
+            ]
+            return {"gate_decision": "rejected", "messages": rejections}
+
+        # Pause for the human. On resume this node re-runs and interrupt()
+        # returns the decision payload.
         decision = interrupt(
             {
                 "type": "approval_request",
@@ -107,7 +178,10 @@ def build_graph(checkpointer: Any, tools: list[BaseTool]):
             return {"gate_decision": "approved"}
 
         reason = (decision or {}).get("reason", "") if isinstance(decision, dict) else ""
-        feedback = f"User rejected this action. {('Feedback: ' + reason) if reason else 'No reason given.'} Do NOT retry unchanged — revise per feedback or ask what to do."
+        feedback = (
+            f"User rejected this action. {('Feedback: ' + reason) if reason else 'No reason given.'} "
+            "Do NOT retry unchanged — revise per feedback or ask what to do."
+        )
         rejections = [
             ToolMessage(content=f"ACTION NOT EXECUTED — {feedback}", tool_call_id=c["id"], name=c["name"])
             for c in calls
@@ -144,17 +218,81 @@ def build_graph(checkpointer: Any, tools: list[BaseTool]):
         return "tools" if state.get("gate_decision") == "approved" else "agent"
 
     g = StateGraph(FridayState)
+    g.add_node("route", route)
     g.add_node("agent", agent)
     g.add_node("tool_gate", tool_gate)
     g.add_node("tools", run_tools)
-    g.add_edge(START, "agent")
+    g.add_edge(START, "route")
+    g.add_edge("route", "agent")
     g.add_conditional_edges("agent", after_agent)
     g.add_conditional_edges("tool_gate", after_gate)
     g.add_edge("tools", "agent")
-    return g.compile(checkpointer=checkpointer)
+    return g.compile(checkpointer=checkpointer) if checkpointer else g.compile()
+
+
+# ---------------------------------------------------------------- job helper
+async def ainvoke_autoresolve(graph, prompt: str, thread_id: str) -> str:
+    """Invoke for scheduled jobs: auto-rejects any approval pause (nobody is
+    watching) and returns the final text."""
+    from langgraph.types import Command  # local import to keep module load light
+
+    config = {"configurable": {"thread_id": thread_id}}
+    payload: Any = {"messages": [HumanMessage(prompt)]}
+    for _ in range(5):
+        result = await graph.ainvoke(payload, config)
+        if not result.get("__interrupt__"):
+            return last_ai_text(result)
+        payload = Command(resume={"decision": "reject", "reason": "background job — no approvals available, report instead"})
+    return last_ai_text(result)
+
+
+def last_ai_text(result: dict) -> str:
+    for msg in reversed(result.get("messages", [])):
+        if isinstance(msg, AIMessage) and msg.content:
+            return msg.content if isinstance(msg.content, str) else str(msg.content)
+    return ""
 
 
 # --------------------------------------------------------------------- utils
+async def _recall_safe(text: str) -> list[str]:
+    try:
+        return await memory.recall(text, k=5)
+    except Exception as exc:
+        log.debug("recall skipped (%s)", exc)
+        return []
+
+
+def _recent_context(messages: list[AnyMessage]) -> str:
+    texts = [
+        m.content for m in messages[-6:-1] if isinstance(m, (HumanMessage, AIMessage)) and isinstance(m.content, str) and m.content
+    ]
+    return " | ".join(t[:80] for t in texts[-3:])
+
+
+def _reflection_note(messages: list[AnyMessage]) -> str:
+    """If the last two tool results were errors, push the agent to change approach."""
+    errors = []
+    for m in reversed(messages):
+        if isinstance(m, ToolMessage):
+            if str(m.content).startswith(("ERROR", "ACTION NOT EXECUTED")):
+                errors.append(f"{m.name}: {str(m.content)[:150]}")
+                if len(errors) >= 2:
+                    break
+            else:
+                return ""
+        elif isinstance(m, (HumanMessage,)):
+            break
+        elif isinstance(m, AIMessage) and m.content and not m.tool_calls:
+            break
+    if len(errors) >= 2:
+        return (
+            "## Reflection required\nYour recent attempts failed:\n- "
+            + "\n- ".join(reversed(errors))
+            + "\nCritique your approach in one line, then try a DIFFERENT approach or ask the user."
+        )
+    return ""
+
+
 def _trim(messages: list[AnyMessage]) -> list[AnyMessage]:
     """Send at most the last N messages, cutting only at a Human boundary so
     we never orphan tool calls from their results."""

@@ -1,7 +1,7 @@
 """SQLite layer: one file (friday.db) holds everything.
 
 - LangGraph's AsyncSqliteSaver creates its own checkpoint tables here.
-- We add: memories (+ vec_memories for embeddings), tool_audit, alerts_sent.
+- We add: memories (+ vec_memories, cosine distance), tool_audit, alerts_sent.
 
 WAL mode lets the checkpointer's aiosqlite connection and our sync
 connections coexist in one process.
@@ -20,7 +20,7 @@ log = logging.getLogger("friday.db")
 
 _EMBED_DIM = settings.MODELS.get("embeddings", {}).get("dim", 768)
 
-_SCHEMA = f"""
+_SCHEMA = """
 CREATE TABLE IF NOT EXISTS memories(
     id          INTEGER PRIMARY KEY,
     created_at  TEXT NOT NULL,
@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS alerts_sent(
 
 _VEC_SCHEMA = f"""
 CREATE VIRTUAL TABLE IF NOT EXISTS vec_memories USING vec0(
-    embedding float[{_EMBED_DIM}]
+    embedding float[{_EMBED_DIM}] distance_metric=cosine
 );
 """
 
@@ -89,6 +89,28 @@ def log_tool_audit(tool: str, decision: str, args: Any = None) -> None:
         conn.execute(
             "INSERT INTO tool_audit(ts, tool, decision, args_preview) VALUES (?,?,?,?)",
             (datetime.now(timezone.utc).isoformat(), tool, decision, preview),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------- heartbeat dedupe
+def alert_already_sent(item_key: str) -> bool:
+    conn = connect()
+    try:
+        row = conn.execute("SELECT 1 FROM alerts_sent WHERE item_key = ?", (item_key,)).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
+def mark_alert_sent(item_key: str) -> None:
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO alerts_sent(item_key, ts) VALUES (?, ?)",
+            (item_key, datetime.now(timezone.utc).isoformat()),
         )
         conn.commit()
     finally:
