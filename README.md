@@ -12,12 +12,15 @@ Approve / Reject / Edit → it remembers you across sessions → 8 AM briefing,
 ## Quickstart
 
 ```bash
-# 1. deps (Python 3.11+, Node for MCP servers, Ollama recommended)
+# 1. deps (Python 3.11+, Node for MCP servers, a local LLM backend recommended)
 uv sync                          # + --extra voice / --extra web if wanted
-ollama pull llama3.1:8b && ollama pull nomic-embed-text
+
+# local-first model (pick one; both are keyless):
+scripts/llamacpp.sh              # llama.cpp → Gemma 3n E4B on :8080  (primary)
+ollama pull llama3.1:8b && ollama pull nomic-embed-text   # Ollama fallback + embeddings
 
 # 2. secrets
-cp .env.example .env             # bot token, owner id, one LLM key
+cp .env.example .env             # bot token, owner id; cloud LLM key OPTIONAL
 
 # 3. offline sanity check
 uv run python -m tests.smoke
@@ -39,7 +42,9 @@ uv run python main.py            # message your bot on Telegram
   `cd bridge/whatsapp && npm install && npm start`, scan the QR, set
   `WHATSAPP_ENABLED=1` + `WHATSAPP_OWNER_JID` in `.env`. Approvals are text
   replies (yes / no / your changes). `wa-auth/` is credential material: chmod 700.
-- **Web (optional):** `uv sync --extra web && uv run chainlit run channels/web.py`.
+- **Web (optional):** `uv sync --extra web && uv run chainlit run channels/web.py`. A
+  full connector like the others — persists to `friday.db` (thread `web:default`) and
+  feeds the same shared long-term memory. Run it alongside `main.py`; both share the db.
 
 ## The agentic core
 - **Router** (`core/router.py`): fast-tier classification → profile. <0.6 confidence → general.
@@ -74,8 +79,14 @@ pin its version). One broken server never blocks the others.
 
 ## Model tiers
 `config/models.json`: `fast` / `standard` / `deep`, each `[primary, …fallbacks]` in
-LiteLLM naming. Router/heartbeat/extraction run on `fast` (local), research synthesis
-on `deep`. Switching providers = JSON edit.
+LiteLLM naming. Router/heartbeat/extraction run on `fast`, research synthesis on `deep`.
+Switching providers = JSON edit.
+
+**Local-first.** Every tier leads with **llama.cpp → Gemma 3n E4B** (`scripts/llamacpp.sh`,
+OpenAI-compatible on `:8080`), then **Ollama**, then any cloud keys you set. Swap the
+local variant with `scripts/llamacpp.sh e2b` (lighter) or pass any GGUF repo —
+`scripts/llamacpp.sh ggml-org/gemma-3-12b-it-GGUF`. An unstarted local server just falls
+through to the next entry, so cloud keys remain a safe optional backstop.
 
 ## Evals & ops
 - Routing regression: `uv run python -m tests.eval_routing` (needs a live fast tier; <90% = fix prompt).
@@ -94,7 +105,8 @@ tests/     smoke · routing_cases · eval_routing   scripts/ backup.sh
 ```
 
 ## Troubleshooting
-- First local-model call slow → Ollama cold start.
+- First local-model call slow → llama.cpp/Ollama cold start (weights loading into RAM/VRAM).
+- Local tier always falling back to cloud → is `scripts/llamacpp.sh` running and on `:8080`? `curl localhost:8080/v1/models`.
 - Google OAuth dies weekly → consent screen in Testing mode; publish or re-auth.
 - Heartbeat too chatty → cut `HEARTBEAT.md` lines; it should usually find nothing.
 - No traces → is `phoenix serve` running? `FRIDAY_TRACING=0` disables cleanly.

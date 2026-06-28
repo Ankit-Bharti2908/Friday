@@ -1,18 +1,21 @@
 {
   "tiers": {
     "fast": [
-      {"model": "openai/gpt-4o-mini"},
+      {"model": "openai/gemma-3n-e4b", "api_base": "http://localhost:8080/v1", "api_key": "sk-no-key"},
       {"model": "ollama/llama3.2:3b", "api_base": "http://localhost:11434"},
+      {"model": "openai/gpt-4o-mini"},
       {"model": "anthropic/claude-haiku-4-5-20251001"}
     ],
     "standard": [
-      {"model": "openai/gpt-4o-mini"},
+      {"model": "openai/gemma-3n-e4b", "api_base": "http://localhost:8080/v1", "api_key": "sk-no-key"},
       {"model": "ollama/llama3.1:8b", "api_base": "http://localhost:11434"},
+      {"model": "openai/gpt-4o-mini"},
       {"model": "anthropic/claude-sonnet-4-6"}
     ],
     "deep": [
-      {"model": "openai/gpt-4o-mini"},
+      {"model": "openai/gemma-3n-e4b", "api_base": "http://localhost:8080/v1", "api_key": "sk-no-key"},
       {"model": "ollama/llama3.1:8b", "api_base": "http://localhost:11434"},
+      {"model": "openai/gpt-4o-mini"},
       {"model": "anthropic/claude-opus-4-8"},
       {"model": "anthropic/claude-sonnet-4-6"}
     ]

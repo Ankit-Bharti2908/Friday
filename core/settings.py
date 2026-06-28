@@ -87,5 +87,8 @@ def validate() -> list[str]:
     if not TELEGRAM_OWNER_ID:
         problems.append("TELEGRAM_OWNER_ID is not set (bot would answer NOBODY — it allowlists you)")
     if not any(os.getenv(k) for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY")):
-        problems.append("no cloud LLM key set — only local Ollama tiers will work")
+        problems.append(
+            "no cloud LLM key set — only local backends will work "
+            "(start llama.cpp via scripts/llamacpp.sh, or `ollama serve`)"
+        )
     return problems

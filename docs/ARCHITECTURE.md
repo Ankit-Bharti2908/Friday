@@ -75,7 +75,7 @@ channels/          Gateways. All share the same graph; they differ only in I/O +
   telegram.py        Primary. Long-poll, inline Approve/Reject/Edit buttons, voice notes.
   cli.py             Dev REPL against the same graph.
   whatsapp.py        WebSocket client to the Node bridge; text-based approvals.
-  web.py             Optional Chainlit UI (ephemeral, in-memory checkpoint).
+  web.py             Optional Chainlit UI (persistent friday.db, shared memory).
 
 bridge/whatsapp/   Node "Baileys" sidecar that bridges WhatsApp <-> a localhost WebSocket.
 
@@ -252,9 +252,9 @@ raising `AllModelsFailed` only if all do.
 
 ```jsonc
 "tiers": {
-  "fast":     [gpt-4o-mini, ollama/llama3.2:3b, claude-haiku-4-5],
-  "standard": [gpt-4o-mini, ollama/llama3.1:8b, claude-sonnet-4-6],
-  "deep":     [gpt-4o-mini, ollama/llama3.1:8b, claude-opus-4-8, claude-sonnet-4-6]
+  "fast":     [llamacpp/gemma-3n-e4b, ollama/llama3.2:3b, gpt-4o-mini, claude-haiku-4-5],
+  "standard": [llamacpp/gemma-3n-e4b, ollama/llama3.1:8b, gpt-4o-mini, claude-sonnet-4-6],
+  "deep":     [llamacpp/gemma-3n-e4b, ollama/llama3.1:8b, gpt-4o-mini, claude-opus-4-8, claude-sonnet-4-6]
 }
 "embeddings": { ollama/nomic-embed-text, dim: 768 }
 "params":     { temperature: 0.3, max_tokens: 2048, timeout: 90 }
@@ -268,10 +268,23 @@ raising `AllModelsFailed` only if all do.
 - `litellm.drop_params = True` lets the same call work across providers that don't
   support every parameter.
 
-> **Note for this repo:** the memory file `local-ollama-setup` says tiers should
-> stay Ollama-first, but the current `models.json` lists `gpt-4o-mini` first in
-> each tier. If you want fully local-by-default, reorder the Ollama entry to the
-> front. Switching providers is a pure JSON edit — no code change.
+**Local backends (no key, local-first).** Every tier now leads with **llama.cpp**,
+then **Ollama**, then cloud — matching the `local-ollama-setup` memory's local-first
+intent. Two ways to run a local model:
+
+- **llama.cpp** (primary) — start `llama-server` with `scripts/llamacpp.sh`. It serves
+  an OpenAI-compatible API on `http://localhost:8080/v1`, so the entry is plain
+  `openai/<name>` + `api_base` + a dummy `api_key` (LiteLLM has no dedicated llama.cpp
+  provider; the `llamacpp/` label above is just shorthand). Default model is **Gemma 3n
+  E4B**; `scripts/llamacpp.sh e2b` swaps in the lighter **E2B** variant, and any GGUF
+  repo works (`scripts/llamacpp.sh ggml-org/gemma-3-12b-it-GGUF`). The `model` string is
+  cosmetic for llama.cpp — only the port must match the JSON.
+- **Ollama** (fallback) — `ollama serve` on `:11434`, `ollama/<name>`.
+
+The fallback chain means an *unstarted* local server just errors and the next entry is
+tried, so it's safe to keep llama.cpp first even when it isn't running. Want max
+reasoning quality on `deep`? Move the cloud entry to the front of that tier — pure JSON,
+no code change.
 
 ---
 
@@ -408,7 +421,7 @@ how they render the approval interrupt and collect the decision.
 | **telegram** | long-poll | inline ✅/❌/✏️ buttons; Edit = free-text feedback | yes | `friday.db` thread `tg:<chat>` |
 | **cli** | stdin REPL | `y / n / feedback` prompt | yes | `friday.db` thread `cli:default` |
 | **whatsapp** | WebSocket → Node bridge | text reply `yes / no / changes` | yes | `friday.db` thread `wa:<jid>` |
-| **web** | Chainlit | Approve/Reject action buttons | no | **ephemeral** `MemorySaver` |
+| **web** | Chainlit | Approve/Reject action buttons | yes | `friday.db` thread `web:default` |
 
 Common pattern in every channel:
 
