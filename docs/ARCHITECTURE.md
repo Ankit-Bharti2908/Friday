@@ -86,7 +86,7 @@ identity/          Friday's personality & knowledge, as editable markdown (no re
   USER.md            Who Friday works for (the owner's facts/preferences).
   HEARTBEAT.md       The proactive checklist the heartbeat job runs.
 
-skills/            *.md workflow snippets (email_style, rca_summary, daily_note_format).
+skills/            *.md workflow snippets (email_style, daily_note_format, fitness_intake, gym_program_design).
 config/            models.json (tiers), policies.json (approval rules), mcp.json (servers).
 memory/            MEMORY.md (human-readable mirror of the DB) + notes/ (daily logs).
 tests/             smoke.py (offline) + eval_routing.py (needs a live fast tier).
@@ -399,12 +399,12 @@ agents: email                            # or "all", or blank
 Matched when **any trigger substring is in the message** *or* **the active profile
 is listed in `agents`** (`all` = every profile). Files are **re-read on every
 match** — edit a skill and behavior changes on the very next message, no restart.
-Ships with `email_style`, `rca_summary`, `daily_note_format`.
+Ships with `email_style`, `daily_note_format`, `fitness_intake`, `gym_program_design`.
 
 This is the lightweight alternative to hardcoding workflows: prompt-level behavior
 lives in editable text, versioned alongside the code. The gym agent leans on this
 hardest: its entire domain knowledge — the intake questionnaire + level rubric
-(`fitness_intake`) and the programming rules (`program_design`) — is skill
+(`fitness_intake`) and the programming rules (`gym_program_design`) — is skill
 markdown, so coaching behavior is tunable without touching Python.
 
 ---

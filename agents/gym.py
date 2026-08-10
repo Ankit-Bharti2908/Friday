@@ -1,7 +1,7 @@
 """Gym trainer subagent: intake interview -> level assessment -> weekly plan
 -> daily coaching. Domain knowledge (the intake questionnaire, level rubric,
 and programming rules) lives in skills/fitness_intake.md and
-skills/program_design.md so it can be tuned without touching code.
+skills/gym_program_design.md so it can be tuned without touching code.
 
 Also home of the daily workout alert job (pure file read + notify — no LLM),
 registered by core/scheduler.py.
@@ -34,7 +34,7 @@ Then follow whichever stage applies:
    assessing beginner/intermediate/advanced with the rubric, mirroring the
    summary back, and saving it with update_fitness_profile. Also `remember`
    a one-line summary (goal + level + days/week) so all agents know.
-2. PROFILE, NO PLAN -> build the week per the program_design skill. Walk
+2. PROFILE, NO PLAN -> build the week per the gym_program_design skill. Walk
    through the plan day by day with the reasoning in one line each, then
    save_workout_plan (its '## <Weekday>' format is what the morning alert
    sends, so all 7 days must be present, rest days included).

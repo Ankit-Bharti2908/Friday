@@ -1,5 +1,5 @@
 ---
-name: program_design
+name: gym_program_design
 description: Evidence-based rules the gym agent uses to build and adjust workout plans
 triggers: workout plan, training plan, training program, workout split, build muscle, deload
 agents: gym

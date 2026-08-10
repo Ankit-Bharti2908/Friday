@@ -96,17 +96,17 @@ def test_prompt_and_skills() -> None:
 
     all_skills = skills.load_all()
     assert {s.name for s in all_skills} >= {
-        "email_style", "rca_summary", "daily_note_format", "fitness_intake", "program_design"
+        "email_style", "daily_note_format", "fitness_intake", "gym_program_design"
     }
-    hit = skills.match("write the RCA summary for yesterday's escalation", "general")
-    assert any(s.name == "rca_summary" for s in hit)
+    hit = skills.match("build me a workout plan for the week", "general")
+    assert any(s.name == "gym_program_design" for s in hit)
     by_agent = skills.match("anything at all", "email")
     assert any(s.name == "email_style" for s in by_agent)
     gym_skills = {s.name for s in skills.match("anything at all", "gym")}
-    assert {"fitness_intake", "program_design"} <= gym_skills  # always with the gym agent
+    assert {"fitness_intake", "gym_program_design"} <= gym_skills  # always with the gym agent
     assert any(s.name == "fitness_intake" for s in skills.match("i want to get fit", "general"))
     rendered = skills.render(hit)
-    assert "Skill: rca_summary" in rendered
+    assert "Skill: gym_program_design" in rendered
     print("prompt + skills   OK")
 
 

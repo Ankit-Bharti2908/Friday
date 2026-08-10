@@ -69,7 +69,7 @@ muscle ≈1-1.5% BW/month for new lifters, halve it per year of training.
    programming for those lifts regardless of anything else.
 Treat self-labels as one weak vote — people overstate. Tell them their level and
 why, kindly: it sets progression speed (per session / weekly / per block), volume
-(8-12 vs 10-20 sets/muscle/week) and split (per the program_design skill).
+(8-12 vs 10-20 sets/muscle/week) and split (per the gym_program_design skill).
 
 ## 5. Saving the profile (update_fitness_profile)
 Write markdown with sections: Stats (age/sex/height/weight, date) · Goal (ranked,

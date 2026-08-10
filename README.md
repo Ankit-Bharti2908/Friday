@@ -52,7 +52,7 @@ uv run python main.py            # message your bot on Telegram
 - **Profiles** (`agents/*.py`): tier + tool subset + instructions. New subagent = one small file.
 - **Skills** (`skills/*.md`): drop a markdown file with triggers; it's injected when matched.
   Re-read every message — edit a skill, behavior changes immediately. Ships with
-  `email_style`, `rca_summary`, `daily_note_format`, `fitness_intake`, `program_design`.
+  `email_style`, `daily_note_format`, `fitness_intake`, `gym_program_design`.
 - **Memory** (`core/memory.py`): SQLite + sqlite-vec is the truth, `memory/MEMORY.md` is the
   mirror. Recall is injected each turn; a post-turn hook extracts durable facts (≥0.8
   confidence); say "remember/forget X" for explicit control. Daily notes in `memory/notes/`,
@@ -61,7 +61,7 @@ uv run python main.py            # message your bot on Telegram
   runs a coach-style intake interview (goal, schedule, equipment, health screen), assesses
   your level, and proposes a 7-day plan you approve. Profile/plan/log are editable markdown
   in `memory/fitness/`; every morning (`FRIDAY_WORKOUT_ALERT`, default 06:30) it pings you
-  with that day's session. Knowledge lives in `skills/fitness_intake.md` + `program_design.md`.
+  with that day's session. Knowledge lives in `skills/fitness_intake.md` + `gym_program_design.md`.
 - **Reflection:** two consecutive tool failures trigger a forced critique-and-change-approach.
 - **Proactivity** (`core/scheduler.py`): briefing 08:00, heartbeat every 30 min 08–22 (runs
   `identity/HEARTBEAT.md` on the read-only autonomous graph; findings deduped via `alerts_sent`
