@@ -52,8 +52,10 @@ NO_PLAN_NO_PROFILE = (
 )
 NO_PLAN_PROFILE_READY = (
     "(no workout plan yet) The profile EXISTS — you already have everything you need. "
-    "NEXT ACTION: no more read calls. Design the full 7-day week per the "
-    "gym_program_design skill, present it in text, then call save_workout_plan once."
+    "NEXT ACTION: stop calling tools. Design the full 7-day week per the "
+    "gym_program_design skill and present it in PLAIN TEXT for the owner to react to. "
+    "Do NOT call save_workout_plan in this same turn — save only after the owner "
+    "replies approving the plan, exactly as approved."
 )
 
 
@@ -180,6 +182,24 @@ def record_workout(entry: str) -> str:
 
 
 @tool
+def delete_fitness_data() -> str:
+    """Archive and delete ALL fitness data (profile, plan, workout log) — the full 'start over' reset. Use only when the owner explicitly wants to start from scratch."""
+    deleted = []
+    for path in (PROFILE_PATH, PLAN_PATH, LOG_PATH):
+        if path.exists():
+            _archive(path)
+            path.unlink()
+            deleted.append(path.name)
+    if not deleted:
+        return "(no fitness data to delete)"
+    return (
+        f"Deleted {', '.join(deleted)} (archived to history/). NEXT ACTION: run the "
+        "FULL intake interview from the very start — do not reuse any remembered "
+        "stats without re-asking."
+    )
+
+
+@tool
 def get_workout_log(days: int = 14) -> str:
     """Workout-log entries from the last N days (default 14). Check this before progression or plan changes — never guess adherence."""
     text = _read(LOG_PATH)
@@ -202,4 +222,5 @@ def fitness_tools() -> list:
         get_todays_workout,
         record_workout,
         get_workout_log,
+        delete_fitness_data,
     ]

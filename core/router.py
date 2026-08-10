@@ -11,6 +11,7 @@ breaks a conversation.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -38,6 +39,46 @@ CONFIDENCE_FLOOR = 0.6
 # fallback, never a stickiness target).
 STICKY_PROFILES = frozenset(p for p in INTENT_TO_PROFILE.values() if p != "general")
 SHORT_FOLLOWUP_CHARS = 40  # "yes", "??", "ok do that" — too short to re-route on
+
+# ---------------------------------------------------------------- pre-router
+# Deterministic fast path that avoids the classify() LLM call entirely when
+# the message is unambiguous. Keywords are deliberately high-precision only:
+# ambiguous words (schedule, training, pr, bench, session, plan, exercise,
+# sets, muscle, draft, run) are EXCLUDED — a wrong deterministic route at
+# conf=1.0 is worse than paying for the LLM's guess.
+PREROUTER_SKIP_CHARS = 25  # tighter than SHORT_FOLLOWUP_CHARS on purpose: below
+# this, today's sticky pipeline keeps prev for every general-mapped intent
+# anyway, so skipping the LLM changes nothing except keywordless sub-25-char
+# specialist switches — rare and self-healing (rephrase → classify runs).
+
+_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "fitness": ("gym", "workout", "workouts", "deadlift", "deadlifts", "squat", "squats",
+                "bench press", "treadmill", "cardio", "reps", "build muscle", "hypertrophy"),
+    "email": ("email", "emails", "e-mail", "inbox", "gmail", "mail"),
+    "calendar": ("calendar", "meeting", "meetings", "appointment", "appointments", "reschedule"),
+    "code": ("github", "repo", "repos", "repository", "pull request", "python", "traceback"),
+}
+_PATTERNS = {
+    intent: re.compile(r"\b(?:" + "|".join(re.escape(k) for k in kws) + r")\b")
+    for intent, kws in _KEYWORDS.items()
+}
+
+
+def keyword_intent(text: str) -> str | None:
+    """Intent iff EXACTLY ONE domain's keywords match; collisions/no-hit -> None."""
+    low = (text or "").lower()
+    hits = [intent for intent, pat in _PATTERNS.items() if pat.search(low)]
+    return hits[0] if len(hits) == 1 else None
+
+
+def skip_classify(text: str, prev_profile: str) -> bool:
+    """True when the LLM router can be skipped outright: a very short,
+    keywordless follow-up inside a specialist flow always sticks anyway."""
+    return (
+        prev_profile in STICKY_PROFILES
+        and len(text.strip()) < PREROUTER_SKIP_CHARS
+        and keyword_intent(text) is None
+    )
 
 
 class Route(BaseModel):

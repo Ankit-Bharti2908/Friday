@@ -216,7 +216,13 @@ the final AI text. Used by `briefing` and `heartbeat`.
 ## 5. Routing & agent profiles
 
 ### Router (`core/router.py`)
-A cheap structured classification on the **fast** tier into one of:
+Before any LLM runs, a **deterministic pre-router** takes the free wins:
+`keyword_intent()` routes instantly when exactly one domain's high-precision
+keywords match (word-boundary regex; ambiguous words like "schedule"/"training"
+are deliberately excluded), and `skip_classify()` skips the LLM outright for
+sub-25-char keywordless follow-ups inside a specialist flow ("yes", "??" — they
+would stick anyway). Everything else falls through to `classify()`:
+a cheap structured classification on the **fast** tier into one of
 `email · calendar · code · research · fitness · memory · task · chat`, with a
 `confidence` score. `INTENT_TO_PROFILE` maps intents to profiles; **`memory`/`task`/`chat` all
 fold into `general`**. `resolve_profile()` then applies **sticky routing** against the
@@ -272,7 +278,7 @@ raising `AllModelsFailed` only if all do.
   "deep":     [llamacpp/gemma-3n-e4b, ollama/llama3.1:8b, gpt-4o-mini, claude-opus-4-8, claude-sonnet-4-6]
 }
 "embeddings": { ollama/nomic-embed-text, dim: 768 }
-"params":     { temperature: 0.3, max_tokens: 2048, timeout: 90 }
+"params":     { temperature: 0.3, max_tokens: 2048, timeout: 90, max_retries: 0 }
 ```
 
 - `acomplete()` — chat completion, returns the raw LiteLLM response.
@@ -328,7 +334,8 @@ long-term memory on request (and always retained via `ALWAYS_INCLUDE`).
 ### Fitness tools (`core/fitness.py`)
 The gym trainer's data layer: `get_/update_fitness_profile`,
 `get_/save_workout_plan`, `get_todays_workout`, `record_workout`,
-`get_workout_log`. Files under `memory/fitness/` (PROFILE.md / PLAN.md / LOG.md,
+`get_workout_log`, `delete_fitness_data` (the "start over" reset —
+archives then deletes all three files; approval-gated via `delete_`). Files under `memory/fitness/` (PROFILE.md / PLAN.md / LOG.md,
 replaced versions archived to `history/`) are the source of truth and stay
 human-editable. Reads and the log append run free; profile/plan saves pause for
 approval — the trainer proposes, the owner approves. `PLAN.md` holds one
@@ -368,7 +375,10 @@ Layered defenses (from README §"Safety model"):
 6. Secrets only in `.env`; configs reference `${VAR}` names.
 
 `render_preview()` produces the human-readable "here's what I'm about to do" block
-shown in the approval prompt (args truncated to 1200 chars).
+shown in the approval prompt. A single-string document arg (a workout plan, a
+profile) renders as plain text — not `\n`-escaped JSON — with a 3500-char limit
+for `save_workout_plan`/`update_fitness_profile` (Telegram-safe under 4096);
+everything else stays JSON truncated at 1200 chars.
 
 ---
 
@@ -382,7 +392,7 @@ vector, recall falls back to keyword `LIKE`).
 |-------|--------------|
 | `add_memory` | Normalizes text, embeds, **dedupes** (cosine distance < 0.08 = "already known"), inserts into `memories` + `vec_memories`, rewrites `MEMORY.md`. |
 | `recall` | Vector search (distance ≤ 0.55), falls back to keyword search. Returns `[kind] text` lines. Injected into the system prompt each turn. |
-| `forget_matching` | Soft-deletes (`deleted=1`) the top matches by vector or keyword. |
+| `forget_matching` | Soft-deletes (`deleted=1`) the top matches by vector or keyword. Query "all"/"everything" wipes every memory (and points at `delete_fitness_data` for the file half of a full reset). |
 | `after_turn` | **Post-turn fire-and-forget hook.** Logs the turn to today's note, then asks the fast tier to extract durable facts (≤2 per turn); stores any with **confidence ≥ 0.8**. Skipped entirely for gym turns — fitness data lives in `memory/fitness/`, the gym agent `remember`s its own one-liner. Never raises. |
 | `consolidate_today` | Nightly: compresses today's raw log into 5-8 bullets at the top of the note. |
 

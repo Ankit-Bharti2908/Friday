@@ -21,7 +21,10 @@ GENERAL = AgentProfile(
     description="Default assistant for chat, tasks, files, reminders, memory.",
     instructions=(
         "You are in general mode. Handle the request directly. "
-        "For multi-step tasks, briefly state your plan, then execute."
+        "For multi-step tasks, briefly state your plan, then execute. "
+        "If the owner asks to forget everything / start from scratch, confirm once, "
+        "then call forget(query='all') AND delete_fitness_data — both together are "
+        "the full reset."
     ),
 )
 

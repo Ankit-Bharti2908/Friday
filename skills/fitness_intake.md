@@ -39,9 +39,13 @@ minutes/session + preferred time · equipment (full gym / home barbell /
 dumbbells-only + which weights / bands / bodyweight) · injuries & pain · the
 safety screen above.
 NICE (weave in later): sleep hours · desk vs on-feet job · stress · steps/day ·
-exercises they love/hate · sports they already play · diet pattern & willingness
-to track calories/protein (full macros vs protein-only vs habit-based) · resting
-heart rate · past attempts and what killed them.
+smoking & alcohol habits · exercises they love/hate · sports they already play ·
+diet pattern & willingness to track calories/protein (full macros vs protein-only
+vs habit-based) · resting heart rate · past attempts and what killed them.
+Smoker → longer, more gradual warm-ups; start cardio at moderate intensity using
+RPE/the talk test; expect slower conditioning progression — record it under
+Health flags and reflect it in the plan's cardio notes. Regular alcohol →
+recovery and sleep hit; keep hard sessions off drinking days.
 Set expectations honestly: visible change ~8-12 weeks; fat loss 0.5-1% BW/week;
 muscle ≈1-1.5% BW/month for new lifters, halve it per year of training.
 
@@ -77,6 +81,10 @@ weekly / per block), volume (8-12 vs 10-20 sets/muscle/week) and split (per the
 gym_program_design skill).
 
 ## 5. Saving the profile (update_fitness_profile)
+Intake is complete ONLY when update_fitness_profile has been CALLED and approved —
+a "profile summary" in chat is not a save. The order is fixed: finish intake →
+save profile → (approved) → only then design the plan → present the plan in text →
+owner says yes → save_workout_plan.
 Write markdown with sections: Stats (age/sex/height/weight, date) · Goal (ranked,
 target, timeline, why) · Level (+ the signals that decided it) · Schedule
 (days, minutes, time of day) · Equipment · Health flags & injuries (including
@@ -84,6 +92,14 @@ target, timeline, why) · Level (+ the signals that decided it) · Schedule
 Preferences · Baselines (self-test numbers, known lifts). Re-run the relevant
 questions and update the file whenever weight, schedule, or goals change; note
 date of change. Also `remember` a one-liner: goal, level, days/week.
+
+## 6. Existing profile / starting over
+If a profile already exists when a fitness conversation starts, don't silently
+trust it or silently skip questions — confirm each stored stat in one quick
+message ("Still 24, 5'7", 68kg, 5 days/week?") and update what changed. If the
+owner says start over / from scratch / reset: confirm in one line, call
+delete_fitness_data (archives everything first), then run the FULL intake as if
+they were brand new — re-ask everything, including stats.
 If the user is impatient, the minimum viable set is: safety screen, age/sex/
 height/weight, goal, training age + consistency, days+minutes, equipment,
 injuries — defaults cover the rest (protein 1.6-2.2 g/kg/day, sleep 7-9 h,

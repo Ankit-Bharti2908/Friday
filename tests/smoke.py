@@ -3,17 +3,21 @@
     uv run python -m tests.smoke
 
 Covers: db (+vec round-trip, alert dedupe), policies, both graph modes,
-history trim, prompt build, sticky routing resolution, duplicate-tool-call
-detection, skills parsing/matching, agent registry tool filtering, memory
-store/recall/forget with injected vectors (+ exact-text dedupe), fitness
-profile/plan/log round-trip (+ today's-section parsing + state-aware
-sentinels), heartbeat parsing, notify quiet-hours math.
+history trim, prompt build, keyword pre-router precision, sticky routing
+resolution, duplicate-tool-call detection, skills parsing/matching, agent
+registry tool filtering, memory store/recall/forget with injected vectors
+(+ exact-text dedupe, forget-all on a temp db, transient-extraction filter),
+approval preview rendering, fitness profile/plan/log round-trip (+ today's-
+section parsing + state-aware sentinels + full reset), heartbeat parsing,
+notify quiet-hours math.
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import struct
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -40,6 +44,9 @@ def test_policies() -> None:
     assert approval.requires_approval("update_fitness_profile")
     assert not approval.requires_approval("get_todays_workout")
     assert not approval.requires_approval("record_workout")
+    # destructive resets must pause (forget via default-deny, delete_ via pattern)
+    assert approval.requires_approval("forget")
+    assert approval.requires_approval("delete_fitness_data")
     print("policies          OK")
 
 
@@ -90,6 +97,31 @@ def test_trim_and_reflection() -> None:
     assert "Reflection required" in _reflection_note(err_msgs)
     assert _reflection_note(msgs) == ""
     print("trim + reflection OK")
+
+
+def test_keyword_prerouter() -> None:
+    from core.router import keyword_intent, skip_classify
+
+    assert keyword_intent("make me a workout plan, I want to build muscle") == "fitness"
+    assert keyword_intent("any important emails today?") == "email"
+    assert keyword_intent("is there any meeting conflict on friday afternoon?") == "calendar"
+    assert keyword_intent("summarize PR #42 in the friday repo") == "code"
+    assert keyword_intent("email me my workout plan") is None       # two domains collide
+    assert keyword_intent("what do you think about the new office policy") is None
+    assert keyword_intent("benchmark this function for me") is None  # word boundary, not substring
+    assert keyword_intent("") is None
+    # precision sweep: the pre-router must never contradict the eval's expected intent
+    cases = json.loads((Path(__file__).parent / "routing_cases.json").read_text())
+    for case in cases:
+        got = keyword_intent(case["text"])
+        assert got in (None, case["intent"]), f"prerouter misroutes {case['text']!r} -> {got}"
+
+    assert skip_classify("yes", "gym")
+    assert skip_classify("??", "gym")
+    assert not skip_classify("yes", "general")                  # no specialist to stick to
+    assert not skip_classify("check my email", "gym")           # keyword present
+    assert not skip_classify("compare litellm vs openrouter for me", "gym")  # too long
+    print("keyword prerouter OK")
 
 
 def test_resolve_profile() -> None:
@@ -211,6 +243,66 @@ def test_memory_roundtrip() -> None:
     print("memory roundtrip  OK")
 
 
+def test_forget_all() -> None:
+    """forget('everything') wipes all memories — exercised against a TEMP db
+    + temp mirror so running smoke on a real installation never nukes the
+    owner's actual memories."""
+    import tempfile
+
+    orig_db, orig_mem = settings.DB_PATH, settings.MEMORY_DIR
+    tmp = Path(tempfile.mkdtemp(prefix="friday-forgetall-smoke-"))
+    settings.DB_PATH = tmp / "test.db"
+    settings.MEMORY_DIR = tmp
+    try:
+        init_db()
+        dim = settings.MODELS["embeddings"]["dim"]
+
+        async def flow():
+            await memory.add_memory("Smoke test fact one", "fact", _vec=[0.2] * dim)
+            await memory.add_memory("Smoke test fact two", "fact", _vec=[-0.2] * dim)
+            gone = await memory.forget_matching("Everything!")   # normalization too
+            assert gone.startswith("Forgot ALL") and "2 erased" in gone
+            assert "delete_fitness_data" in gone                 # points at the file reset
+            assert await memory.recall("smoke test fact", _vec=[0.2] * dim) == []
+
+        asyncio.run(flow())
+        assert "(none yet)" in (tmp / "MEMORY.md").read_text(encoding="utf-8")
+    finally:
+        settings.DB_PATH, settings.MEMORY_DIR = orig_db, orig_mem
+    print("forget-all        OK")
+
+
+def test_transient_filter() -> None:
+    from core.memory import _looks_transient
+
+    assert _looks_transient("User has not specified fitness goals or workout preferences yet.")
+    assert _looks_transient("User wants to start a new workout plan")
+    assert _looks_transient("User needs to provide fitness profile information for workout plan creation")
+    assert _looks_transient("User is asking for a summary of unread email")
+    # durable facts these arms must NOT kill
+    assert not _looks_transient("User wants to start training for a marathon")
+    assert not _looks_transient("User has not eaten meat since 2019")
+    assert not _looks_transient("User is starting a new job at Google in September")
+    assert not _looks_transient("User's manager is Sandeep")
+    print("transient filter  OK")
+
+
+def test_render_preview() -> None:
+    plan = "# Weekly Plan\n" + "\n".join(f"- line {i}" for i in range(500))
+    out = approval.render_preview([{"name": "save_workout_plan", "args": {"content": plan}}])
+    assert "save_workout_plan · content" in out
+    assert "\n- line 1\n" in out          # real newlines — not json-escaped
+    assert "\\n" not in out
+    assert "chars total" in out and "saved on approve" in out
+    assert len(out) < 4000                # content limit 3500 + header, Telegram-safe
+    mail = approval.render_preview(
+        [{"name": "gmail_send_email", "args": {"to": "x@y.z", "body": "hello\nworld " * 300}}]
+    )
+    assert mail.startswith("1. gmail_send_email")
+    assert "chars total" in mail and len(mail) < 1500   # multi-arg stays JSON at 1200
+    print("render preview    OK")
+
+
 def test_fitness_roundtrip() -> None:
     import tempfile
     from pathlib import Path
@@ -255,6 +347,14 @@ def test_fitness_roundtrip() -> None:
     assert fitness.record_workout.invoke({"entry": "bench 4x8 @ 50kg, felt good"}).startswith("Logged")
     assert "bench 4x8" in fitness.get_workout_log.invoke({"days": 7})
     assert fitness.get_workout_log.invoke({"days": 1})  # today is inside every window
+
+    # full reset: archives everything, deletes, and directs a fresh intake
+    result = fitness.delete_fitness_data.invoke({})
+    assert "PROFILE.md" in result and "PLAN.md" in result and "LOG.md" in result
+    assert "intake" in result
+    assert list((tmp / "history").glob("profile-*.md")) and list((tmp / "history").glob("log-*.md"))
+    assert fitness.get_fitness_profile.invoke({}) == fitness.NO_PROFILE
+    assert fitness.delete_fitness_data.invoke({}) == "(no fitness data to delete)"
     print("fitness roundtrip OK")
 
 
@@ -277,11 +377,15 @@ if __name__ == "__main__":
     test_db_vec_alerts()
     test_graphs_build()
     test_trim_and_reflection()
+    test_keyword_prerouter()
     test_resolve_profile()
     test_duplicate_tool_detection()
     test_prompt_and_skills()
     test_registry_filtering()
     test_memory_roundtrip()
+    test_forget_all()
+    test_transient_filter()
+    test_render_preview()
     test_fitness_roundtrip()
     test_heartbeat_parse_and_notify()
     print("\nall smoke tests passed ✔")

@@ -75,17 +75,28 @@ def build_graph(checkpointer: Any, tools: list[BaseTool], *, autonomous: bool = 
             recalled: list[str] = []
             route_info = "autonomous"
         else:
-            context = _recent_context(state["messages"])
-            (_, route_obj), recalled = await asyncio.gather(
-                router.classify(user_text, context),
-                _recall_safe(user_text),
-            )
             prev = state.get("agent_name", "")  # checkpointed from the previous turn
+            keyword = router.keyword_intent(user_text)
+            if keyword is not None:  # unambiguous keywords — no router LLM call
+                route_obj: router.Route | None = router.Route(intent=keyword, confidence=1.0)
+                recalled = await _recall_safe(user_text)
+                src = "keyword"
+            elif router.skip_classify(user_text, prev):  # short in-flow follow-up
+                route_obj = None  # resolve_profile(None, prev, …) keeps prev
+                recalled = await _recall_safe(user_text)
+                src = "skip"
+            else:
+                context = _recent_context(state["messages"])
+                (_, route_obj), recalled = await asyncio.gather(
+                    router.classify(user_text, context),
+                    _recall_safe(user_text),
+                )
+                src = "llm"
             profile_name = router.resolve_profile(route_obj, prev, user_text)
             route_info = (
-                f"intent={route_obj.intent} conf={route_obj.confidence:.2f} prev={prev or '-'}"
+                f"src={src} intent={route_obj.intent} conf={route_obj.confidence:.2f} prev={prev or '-'}"
                 if route_obj
-                else f"intent=? prev={prev or '-'}"
+                else f"src={src} intent=? prev={prev or '-'}"
             )
 
         matched = skills.match(user_text, profile_name)
