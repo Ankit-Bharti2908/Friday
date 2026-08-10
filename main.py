@@ -19,6 +19,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from core import notify, scheduler, settings
 from core.db import init_db
+from core.fitness import fitness_tools
 from core.graph import build_graph
 from core.memory import memory_tools
 from core.sandbox import sandbox_tools
@@ -51,7 +52,7 @@ async def amain() -> None:
         log.error("Telegram not configured — fix .env, or use the CLI: uv run python -m channels.cli")
         return
 
-    tools = await load_mcp_tools() + memory_tools() + sandbox_tools()
+    tools = await load_mcp_tools() + memory_tools() + sandbox_tools() + fitness_tools()
 
     async with AsyncSqliteSaver.from_conn_string(str(settings.DB_PATH)) as saver:
         graph = build_graph(saver, tools)

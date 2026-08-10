@@ -59,6 +59,7 @@ core/              The engine. No business logic about "email" or "calendar" liv
   approval.py        Policy: which tools auto-run vs. pause vs. are blocked.
   tools.py           Loads MCP servers from config/mcp.json into LangChain tools.
   memory.py          Long-term memory (vector + keyword), daily notes, extraction hook.
+  fitness.py         Gym-trainer data layer: profile/plan/log markdown + tools + today's session.
   skills.py          Markdown "skills" — workflow snippets injected when matched.
   notify.py          Outbound owner notifications with quiet-hours queueing.
   scheduler.py       APScheduler cron jobs (briefing, heartbeat, consolidation).
@@ -67,9 +68,10 @@ core/              The engine. No business logic about "email" or "calendar" liv
 agents/            The modular "subagent" system. Each profile = tier + tools + instructions.
   _base.py           AgentProfile dataclass (frozen).
   registry.py        PROFILES map + filter_tools() + ALWAYS_INCLUDE set.
-  email.py / research.py / coder.py / calendar_agent.py   The four specialists.
+  email.py / research.py / coder.py / calendar_agent.py / gym.py   The five specialists.
   briefing.py        08:00 morning briefing (agentic pass, read-only).
   heartbeat.py       Every 30 min proactive check (autonomous graph, dedup'd alerts).
+                     (gym.py also carries the daily workout alert job.)
 
 channels/          Gateways. All share the same graph; they differ only in I/O + approval UX.
   telegram.py        Primary. Long-poll, inline Approve/Reject/Edit buttons, voice notes.
@@ -208,8 +210,8 @@ the final AI text. Used by `briefing` and `heartbeat`.
 
 ### Router (`core/router.py`)
 A cheap structured classification on the **fast** tier into one of:
-`email · calendar · code · research · memory · task · chat`, with a `confidence`
-score. `INTENT_TO_PROFILE` maps intents to profiles; **`memory`/`task`/`chat` all
+`email · calendar · code · research · fitness · memory · task · chat`, with a
+`confidence` score. `INTENT_TO_PROFILE` maps intents to profiles; **`memory`/`task`/`chat` all
 fold into `general`**. Below `CONFIDENCE_FLOOR = 0.6` → `general`. Any exception →
 `general`. *The router must never break a conversation.*
 
@@ -233,6 +235,7 @@ class AgentProfile:
 | calendar  | standard | calendar, event, schedule, meeting, availability     | availability / events |
 | coder     | standard | github, git, repo, pull, issue, commit, file, python | PRs / issues / code |
 | research  | **deep** | search, fetch, web, browse, read, url, http          | multi-step web research |
+| gym       | standard | fitness, workout, exercise, gym, cardio, health      | intake / plans / coaching |
 
 `registry.filter_tools()` keeps a tool if its name contains any profile keyword
 **or** it's in `ALWAYS_INCLUDE = {remember, recall_memories, forget, run_python}`.
@@ -290,7 +293,7 @@ no code change.
 
 ## 7. Tools: MCP, memory, sandbox
 
-Friday's full toolset = **MCP tools + memory tools + `run_python`**.
+Friday's full toolset = **MCP tools + memory tools + fitness tools + `run_python`**.
 
 ### MCP (`core/tools.py` + `config/mcp.json`)
 Claude-Desktop-style server config. Conventions:
@@ -309,6 +312,16 @@ modularity story for integrations.
 ### Memory tools (`core/memory.py`)
 `remember`, `recall_memories`, `forget` — exposed to the agent so it can manage
 long-term memory on request (and always retained via `ALWAYS_INCLUDE`).
+
+### Fitness tools (`core/fitness.py`)
+The gym trainer's data layer: `get_/update_fitness_profile`,
+`get_/save_workout_plan`, `get_todays_workout`, `record_workout`,
+`get_workout_log`. Files under `memory/fitness/` (PROFILE.md / PLAN.md / LOG.md,
+replaced versions archived to `history/`) are the source of truth and stay
+human-editable. Reads and the log append run free; profile/plan saves pause for
+approval — the trainer proposes, the owner approves. `PLAN.md` holds one
+`## <Weekday>` section per day; `todays_session()` extracts today's section for
+the daily alert without any LLM call.
 
 ### Sandbox (`core/sandbox.py`)
 `run_python(code)` runs in a throwaway `python:3.12-slim` Docker container with
@@ -389,7 +402,10 @@ match** — edit a skill and behavior changes on the very next message, no resta
 Ships with `email_style`, `rca_summary`, `daily_note_format`.
 
 This is the lightweight alternative to hardcoding workflows: prompt-level behavior
-lives in editable text, versioned alongside the code.
+lives in editable text, versioned alongside the code. The gym agent leans on this
+hardest: its entire domain knowledge — the intake questionnaire + level rubric
+(`fitness_intake`) and the programming rules (`program_design`) — is skill
+markdown, so coaching behavior is tunable without touching Python.
 
 ---
 
@@ -400,6 +416,7 @@ jobstore needed):
 
 | Time (IST)        | Job | What it does |
 |-------------------|-----|--------------|
+| 06:30 (`FRIDAY_WORKOUT_ALERT`) | `workout` | Sends today's `## <Weekday>` section of `memory/fitness/PLAN.md` — **pure file read, no LLM**. Deduped per day via `alerts_sent` (`workout:<date>`); silent if there's no plan or no section for today. Urgent (bypasses quiet hours) since the owner scheduled it deliberately. Empty env value disables. |
 | 08:00             | `briefing` | One agentic pass through the **main graph** (read-only via auto-resolve): calendar + unread email triage + GitHub + yesterday's open loops → ≤15 lines to the owner. Missing integrations silently skip. |
 | 07:35             | `flush` | Sends any messages queued during quiet hours. |
 | */30, 08–22       | `heartbeat` | Runs `HEARTBEAT.md` checklist on the **autonomous graph** (read-only by construction). Emits a strict JSON array of `{key, message}` findings; `alerts_sent` table **dedupes by key** so the same item never pings twice. Most runs are silent. |

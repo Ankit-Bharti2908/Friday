@@ -18,6 +18,8 @@ friday.db-wal
 memory/MEMORY.md
 # daily notes are runtime data
 memory/notes/
+# fitness profile/plan/log are personal runtime data
+memory/fitness/
 
 # --- Python ---
 __pycache__/

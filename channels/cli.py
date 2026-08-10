@@ -17,6 +17,7 @@ from langgraph.types import Command
 
 from core import memory, settings
 from core.db import init_db
+from core.fitness import fitness_tools
 from core.graph import build_graph, last_ai_text
 from core.memory import memory_tools
 from core.sandbox import sandbox_tools
@@ -30,7 +31,7 @@ async def main() -> None:
     for problem in settings.validate():
         print(f"[warn] {problem}")
 
-    tools = await load_mcp_tools() + memory_tools() + sandbox_tools()
+    tools = await load_mcp_tools() + memory_tools() + sandbox_tools() + fitness_tools()
     print(f"[friday] {len(tools)} tools loaded. /new = fresh thread, /quit = exit.\n")
 
     async with AsyncSqliteSaver.from_conn_string(str(settings.DB_PATH)) as saver:

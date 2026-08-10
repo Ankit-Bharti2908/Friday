@@ -10,6 +10,7 @@ from agents._base import AgentProfile
 from agents.calendar_agent import PROFILE as CALENDAR
 from agents.coder import PROFILE as CODER
 from agents.email import PROFILE as EMAIL
+from agents.gym import PROFILE as GYM
 from agents.research import PROFILE as RESEARCH
 
 # Tools every profile keeps regardless of filtering (memory + sandbox).
@@ -25,7 +26,7 @@ GENERAL = AgentProfile(
 )
 
 PROFILES: dict[str, AgentProfile] = {
-    p.name: p for p in (GENERAL, EMAIL, RESEARCH, CODER, CALENDAR)
+    p.name: p for p in (GENERAL, EMAIL, RESEARCH, CODER, CALENDAR, GYM)
 }
 
 

@@ -15,13 +15,14 @@ from core import llm
 
 log = logging.getLogger("friday.router")
 
-Intent = Literal["email", "calendar", "code", "research", "memory", "task", "chat"]
+Intent = Literal["email", "calendar", "code", "research", "fitness", "memory", "task", "chat"]
 
 INTENT_TO_PROFILE = {
     "email": "email",
     "calendar": "calendar",
     "code": "coder",
     "research": "research",
+    "fitness": "gym",
     "memory": "general",
     "task": "general",
     "chat": "general",
@@ -40,6 +41,7 @@ _PROMPT = """Classify the user's message for a personal assistant. Intents:
 - calendar: events, meetings, scheduling, availability
 - code: GitHub, PRs, issues, repos, programming help, running code
 - research: questions needing web search / reading sources / comparisons
+- fitness: gym training, workout plans, exercises, logging a workout, body/weight goals, cardio
 - memory: asking the assistant to remember/forget/recall things about the user
 - task: file operations, reminders, todos, misc actions
 - chat: everything else (small talk, opinions, quick answers)
