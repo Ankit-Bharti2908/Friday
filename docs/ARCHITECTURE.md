@@ -189,6 +189,13 @@ START → route → agent → (after_agent?) → tool_gate → (after_gate?) →
 - For each approved tool call, looks it up in `tool_map`, runs it with a **120s
   timeout**, truncates output to **8000 chars**, wraps exceptions into `ERROR …`
   strings (never crashes the graph). Every result becomes a `ToolMessage`.
+- **Repeated-call guard:** a call identical (name + canonical args) to one already
+  made this turn still executes (a write may legitimately need to), but when the
+  result is also identical it is replaced by an `UNCHANGED — …` stub telling the
+  model to stop reading and answer; repeated identical errors keep the `ERROR`
+  prefix so the reflection nudge still fires. Kills the read-ping-pong loops that
+  weak models fall into. (The `agent` node also injects a "wrap up, N steps left"
+  note over the last 4 loops before the circuit breaker.)
 - Loops back to `agent`, which sees the results and either calls more tools or
   produces a final answer.
 
@@ -212,8 +219,13 @@ the final AI text. Used by `briefing` and `heartbeat`.
 A cheap structured classification on the **fast** tier into one of:
 `email · calendar · code · research · fitness · memory · task · chat`, with a
 `confidence` score. `INTENT_TO_PROFILE` maps intents to profiles; **`memory`/`task`/`chat` all
-fold into `general`**. Below `CONFIDENCE_FLOOR = 0.6` → `general`. Any exception →
-`general`. *The router must never break a conversation.*
+fold into `general`**. `resolve_profile()` then applies **sticky routing** against the
+previous turn's checkpointed profile: below `CONFIDENCE_FLOOR = 0.6` (or on classifier
+failure) it keeps the previous specialist rather than dropping to `general`, and a
+confident general-mapped intent on a short follow-up (<40 chars — "yes", "??") also
+stays in the flow. A confident specialist intent always switches. This is what keeps
+multi-turn flows (the gym intake interview) inside their specialist across one-word
+replies. *The router must never break a conversation.*
 
 ### Profiles (`agents/*.py`)
 An `AgentProfile` is just:
@@ -371,7 +383,7 @@ vector, recall falls back to keyword `LIKE`).
 | `add_memory` | Normalizes text, embeds, **dedupes** (cosine distance < 0.08 = "already known"), inserts into `memories` + `vec_memories`, rewrites `MEMORY.md`. |
 | `recall` | Vector search (distance ≤ 0.55), falls back to keyword search. Returns `[kind] text` lines. Injected into the system prompt each turn. |
 | `forget_matching` | Soft-deletes (`deleted=1`) the top matches by vector or keyword. |
-| `after_turn` | **Post-turn fire-and-forget hook.** Logs the turn to today's note, then asks the fast tier to extract durable facts; stores any with **confidence ≥ 0.8**. Never raises. |
+| `after_turn` | **Post-turn fire-and-forget hook.** Logs the turn to today's note, then asks the fast tier to extract durable facts (≤2 per turn); stores any with **confidence ≥ 0.8**. Skipped entirely for gym turns — fitness data lives in `memory/fitness/`, the gym agent `remember`s its own one-liner. Never raises. |
 | `consolidate_today` | Nightly: compresses today's raw log into 5-8 bullets at the top of the note. |
 
 Memory `kind ∈ {fact, preference, project, event}` (enforced by a DB CHECK

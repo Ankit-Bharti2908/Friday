@@ -73,11 +73,19 @@ def build_graph(checkpointer: Any, tools: list[BaseTool], *, autonomous: bool = 
         if autonomous:
             profile_name = "general"
             recalled: list[str] = []
+            route_info = "autonomous"
         else:
             context = _recent_context(state["messages"])
-            (profile_name, _), recalled = await asyncio.gather(
+            (_, route_obj), recalled = await asyncio.gather(
                 router.classify(user_text, context),
                 _recall_safe(user_text),
+            )
+            prev = state.get("agent_name", "")  # checkpointed from the previous turn
+            profile_name = router.resolve_profile(route_obj, prev, user_text)
+            route_info = (
+                f"intent={route_obj.intent} conf={route_obj.confidence:.2f} prev={prev or '-'}"
+                if route_obj
+                else f"intent=? prev={prev or '-'}"
             )
 
         matched = skills.match(user_text, profile_name)
@@ -90,7 +98,8 @@ def build_graph(checkpointer: Any, tools: list[BaseTool], *, autonomous: bool = 
         if matched:
             parts.append(skills.render(matched))
 
-        log.info("route -> %s (skills: %s)", profile_name, [s.name for s in matched] or "-")
+        log.info("route -> %s (%s; skills: %s)", profile_name, route_info,
+                 [s.name for s in matched] or "-")
         return {
             "agent_name": profile_name,
             "context_block": "\n\n".join(parts),
@@ -100,9 +109,14 @@ def build_graph(checkpointer: Any, tools: list[BaseTool], *, autonomous: bool = 
 
     # ------------------------------------------------------------------ agent
     async def agent(state: FridayState) -> dict[str, Any]:
-        if state.get("loops", 0) >= MAX_AGENT_LOOPS:
+        loops = state.get("loops", 0)
+        if loops >= MAX_AGENT_LOOPS:
             return {
-                "messages": [AIMessage(content="I hit my action limit for this request — stopping here. Tell me how to proceed.")],
+                "messages": [AIMessage(content=(
+                    "I've hit my tool-step limit for this request, so I'm pausing before "
+                    "I spin. Say 'continue' and I'll pick up where I left off, or tell "
+                    "me what to change."
+                ))],
                 "loops": 0,
             }
 
@@ -115,6 +129,11 @@ def build_graph(checkpointer: Any, tools: list[BaseTool], *, autonomous: bool = 
             extras.append(
                 "## Background mode\nYou are running unattended. Use READ-ONLY tools only; "
                 "any write/send action will be auto-rejected. Be terse."
+            )
+        if loops >= MAX_AGENT_LOOPS - 4:
+            extras.append(
+                f"## Wrap up\n{MAX_AGENT_LOOPS - loops} tool steps remain this turn. "
+                "Stop exploring — deliver your answer in text (plus at most one write call)."
             )
         reflection = _reflection_note(state["messages"])
         if reflection:
@@ -135,7 +154,7 @@ def build_graph(checkpointer: Any, tools: list[BaseTool], *, autonomous: bool = 
             for tc in (msg.tool_calls or [])
         ]
         ai = AIMessage(content=msg.content or "", tool_calls=tool_calls)
-        return {"messages": [ai], "loops": state.get("loops", 0) + 1}
+        return {"messages": [ai], "loops": loops + 1}
 
     # -------------------------------------------------------------- tool_gate
     def tool_gate(state: FridayState) -> dict[str, Any]:
@@ -193,6 +212,7 @@ def build_graph(checkpointer: Any, tools: list[BaseTool], *, autonomous: bool = 
     # ------------------------------------------------------------------ tools
     async def run_tools(state: FridayState) -> dict[str, Any]:
         last_ai = next(m for m in reversed(state["messages"]) if isinstance(m, AIMessage))
+        prior = _prior_tool_results(state["messages"])
         results: list[ToolMessage] = []
         for call in last_ai.tool_calls:
             tool = tool_map.get(call["name"])
@@ -206,6 +226,26 @@ def build_graph(checkpointer: Any, tools: list[BaseTool], *, autonomous: bool = 
                 except Exception as exc:
                     content = f"ERROR running {call['name']}: {type(exc).__name__}: {exc}"
                     log_tool_audit(call["name"], "error", call["args"])
+            # Repeated-call guard: the call ran (a write may legitimately need to),
+            # but an identical result gets replaced by a stub so a looping model
+            # sees an unmissable stop signal instead of the same data again.
+            key = (call["name"], _canon_args(call["args"]))
+            if prior.get(key) == content:
+                if content.startswith("ERROR"):
+                    content = (
+                        "ERROR (unchanged): this exact call already failed the same way "
+                        "this turn. Do not repeat it — change approach or tell the user "
+                        "what is blocking you."
+                    )
+                else:
+                    content = (
+                        f"UNCHANGED — identical to your earlier {call['name']} result this "
+                        "turn; the data has not changed (if this was a write, it did run "
+                        "again — do NOT repeat it). Stop calling tools: answer the user in "
+                        "text now, or make the one write call you were preparing."
+                    )
+            else:
+                prior[key] = content  # catches duplicates within this same batch too
             results.append(ToolMessage(content=content, tool_call_id=call["id"], name=call["name"]))
         return {"messages": results, "gate_decision": ""}
 
@@ -267,6 +307,30 @@ def _recent_context(messages: list[AnyMessage]) -> str:
         m.content for m in messages[-6:-1] if isinstance(m, (HumanMessage, AIMessage)) and isinstance(m.content, str) and m.content
     ]
     return " | ".join(t[:80] for t in texts[-3:])
+
+
+def _canon_args(args: Any) -> str:
+    return json.dumps(args, sort_keys=True, default=str)
+
+
+def _prior_tool_results(messages: list[AnyMessage]) -> dict[tuple[str, str], str]:
+    """(tool name, canonical args) -> most recent REAL result content since the
+    last HumanMessage. UNCHANGED/duplicate stubs are never stored, so a repeat
+    is always compared against the data it would reproduce."""
+    start = next(
+        (i for i in range(len(messages) - 1, -1, -1) if isinstance(messages[i], HumanMessage)), 0
+    )
+    calls: dict[str, tuple[str, str]] = {}
+    out: dict[tuple[str, str], str] = {}
+    for m in messages[start:]:
+        if isinstance(m, AIMessage):
+            for tc in m.tool_calls or []:
+                calls[tc["id"]] = (tc["name"], _canon_args(tc["args"]))
+        elif isinstance(m, ToolMessage) and m.tool_call_id in calls:
+            content = str(m.content)
+            if not content.startswith(("UNCHANGED —", "ERROR (unchanged)")):
+                out[calls[m.tool_call_id]] = content
+    return out
 
 
 def _reflection_note(messages: list[AnyMessage]) -> str:

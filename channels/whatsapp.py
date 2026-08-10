@@ -84,7 +84,7 @@ async def _handle(graph, ws, msg: dict) -> None:
         return
 
     await _send(ws, jid, last_ai_text(result) or "(no reply)")
-    asyncio.create_task(memory.after_turn(result.get("messages", [])))
+    asyncio.create_task(memory.after_turn(result.get("messages", []), result.get("agent_name", "")))
 
 
 async def _send(ws, jid: str, text: str) -> None:

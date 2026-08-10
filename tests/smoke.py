@@ -3,10 +3,11 @@
     uv run python -m tests.smoke
 
 Covers: db (+vec round-trip, alert dedupe), policies, both graph modes,
-history trim, prompt build, skills parsing/matching, agent registry tool
-filtering, memory store/recall/forget with injected vectors, fitness
-profile/plan/log round-trip (+ today's-section parsing), heartbeat
-parsing, notify quiet-hours math.
+history trim, prompt build, sticky routing resolution, duplicate-tool-call
+detection, skills parsing/matching, agent registry tool filtering, memory
+store/recall/forget with injected vectors (+ exact-text dedupe), fitness
+profile/plan/log round-trip (+ today's-section parsing + state-aware
+sentinels), heartbeat parsing, notify quiet-hours math.
 """
 from __future__ import annotations
 
@@ -23,7 +24,8 @@ from agents import registry
 from agents.heartbeat import _parse_findings
 from core import approval, db, memory, notify, prompts, settings, skills
 from core.db import alert_already_sent, connect, init_db, mark_alert_sent
-from core.graph import _reflection_note, _trim, build_graph
+from core.graph import _canon_args, _prior_tool_results, _reflection_note, _trim, build_graph
+from core.router import Route, resolve_profile
 
 
 def test_policies() -> None:
@@ -90,6 +92,56 @@ def test_trim_and_reflection() -> None:
     print("trim + reflection OK")
 
 
+def test_resolve_profile() -> None:
+    low = Route(intent="chat", confidence=0.3)
+    assert resolve_profile(low, "gym", "yes") == "gym"            # weak signal -> continuity
+    assert resolve_profile(None, "gym", "??") == "gym"            # classifier failure -> continuity
+    assert resolve_profile(low, "", "yes") == "general"           # nothing to stick to
+    assert resolve_profile(None, "general", "hm") == "general"    # general never sticks
+    # a confident specialist intent always switches
+    assert resolve_profile(Route(intent="email", confidence=0.95), "gym", "any mail from Priya?") == "email"
+    assert resolve_profile(Route(intent="fitness", confidence=0.9), "email", "plan my workouts") == "gym"
+    # confident general-mapped intent: short follow-up stays in the flow, long message moves on
+    chat = Route(intent="chat", confidence=0.9)
+    assert resolve_profile(chat, "gym", "yes") == "gym"
+    assert resolve_profile(Route(intent="task", confidence=0.9), "gym", "ok do that") == "gym"
+    assert resolve_profile(chat, "gym", "what do you think about the new office policy then?") == "general"
+    print("resolve_profile   OK")
+
+
+def test_duplicate_tool_detection() -> None:
+    def ai_call(cid: str, name: str, args: dict):
+        return AIMessage("", tool_calls=[{"name": name, "args": args, "id": cid, "type": "tool_call"}])
+
+    msgs = [
+        HumanMessage("earlier turn"),
+        ai_call("c0", "get_fitness_profile", {}),
+        ToolMessage("stale", tool_call_id="c0", name="get_fitness_profile"),
+        AIMessage("done"),
+        HumanMessage("plan please"),
+        ai_call("c1", "get_workout_plan", {}),
+        ToolMessage("(no workout plan yet) …", tool_call_id="c1", name="get_workout_plan"),
+        ai_call("c2", "save_workout_plan", {"content": "# Plan"}),
+        ToolMessage("Workout plan saved (1 lines).", tool_call_id="c2", name="save_workout_plan"),
+        ai_call("c3", "get_workout_plan", {}),
+        ToolMessage("# Plan", tool_call_id="c3", name="get_workout_plan"),
+    ]
+    prior = _prior_tool_results(msgs)
+    key = ("get_workout_plan", _canon_args({}))
+    assert prior[key] == "# Plan"                                  # latest REAL result wins
+    assert ("save_workout_plan", _canon_args({"content": "# Plan"})) in prior
+    assert ("get_fitness_profile", _canon_args({})) not in prior   # earlier turns excluded
+    # stubs never become comparison baselines
+    msgs += [
+        ai_call("c4", "get_workout_plan", {}),
+        ToolMessage("UNCHANGED — identical to your earlier get_workout_plan result this turn…",
+                    tool_call_id="c4", name="get_workout_plan"),
+    ]
+    assert _prior_tool_results(msgs)[key] == "# Plan"
+    assert _canon_args({"b": 1, "a": 2}) == _canon_args({"a": 2, "b": 1})  # order-insensitive
+    print("dup-call guard    OK")
+
+
 def test_prompt_and_skills() -> None:
     text = prompts.build_system_prompt([], extras=["## Extra\nhello"])
     assert "Friday" in text and "## Extra" in text
@@ -139,8 +191,12 @@ def test_memory_roundtrip() -> None:
     async def flow():
         r1 = await memory.add_memory("Prefers uv over pip for Python projects", "preference", _vec=v1)
         assert r1.startswith("Remembered")
-        r2 = await memory.add_memory("Prefers uv over pip for python projects.", "preference", _vec=v2)
+        # near-identical VECTOR, different words -> embedding dedupe
+        r2 = await memory.add_memory("Likes uv much more than pip for Python work", "preference", _vec=v2)
         assert r2.startswith("Already known")
+        # same normalized TEXT, distinct vector -> exact-text dedupe (works offline too)
+        r3 = await memory.add_memory("prefers UV over pip for Python projects.", "preference", _vec=v3)
+        assert r3.startswith("Already known")
         await memory.add_memory("Working on Friday assistant project", "project", _vec=v3)
         hits = await memory.recall("python tooling preference", _vec=v1)
         assert any("uv over pip" in h for h in hits)
@@ -169,8 +225,12 @@ def test_fitness_roundtrip() -> None:
     fitness.HISTORY_DIR = tmp / "history"
 
     assert fitness.get_fitness_profile.invoke({}) == fitness.NO_PROFILE
+    assert fitness.get_workout_plan.invoke({}) == fitness.NO_PLAN_NO_PROFILE
     fitness.update_fitness_profile.invoke({"content": "# Profile\n- goal: hypertrophy\n- level: beginner"})
     assert "hypertrophy" in fitness.get_fitness_profile.invoke({})
+    # profile now exists but no plan -> sentinel must direct the agent to design+save
+    assert fitness.get_workout_plan.invoke({}) == fitness.NO_PLAN_PROFILE_READY
+    assert "save_workout_plan" in fitness.get_workout_plan.invoke({})
 
     plan = "\n".join(
         ["# Week — Upper/Lower"]
@@ -217,6 +277,8 @@ if __name__ == "__main__":
     test_db_vec_alerts()
     test_graphs_build()
     test_trim_and_reflection()
+    test_resolve_profile()
+    test_duplicate_tool_detection()
     test_prompt_and_skills()
     test_registry_filtering()
     test_memory_roundtrip()

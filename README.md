@@ -48,7 +48,8 @@ uv run python main.py            # message your bot on Telegram
   feeds the same shared long-term memory. Run it alongside `main.py`; both share the db.
 
 ## The agentic core
-- **Router** (`core/router.py`): fast-tier classification → profile. <0.6 confidence → general.
+- **Router** (`core/router.py`): fast-tier classification → profile. Sticky: low confidence
+  or a short follow-up ("yes", "??") continues with the previous specialist, else general.
 - **Profiles** (`agents/*.py`): tier + tool subset + instructions. New subagent = one small file.
 - **Skills** (`skills/*.md`): drop a markdown file with triggers; it's injected when matched.
   Re-read every message — edit a skill, behavior changes immediately. Ships with

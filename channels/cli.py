@@ -61,7 +61,9 @@ async def main() -> None:
                 interrupts = result.get("__interrupt__")
                 if not interrupts:
                     print(f"\nfriday> {last_ai_text(result) or '(no reply)'}\n")
-                    asyncio.get_running_loop().create_task(memory.after_turn(result.get("messages", [])))
+                    asyncio.get_running_loop().create_task(
+                        memory.after_turn(result.get("messages", []), result.get("agent_name", ""))
+                    )
                     await asyncio.sleep(0)  # let the hook start
                     break
 

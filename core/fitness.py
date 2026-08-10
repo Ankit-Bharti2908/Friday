@@ -37,8 +37,28 @@ HISTORY_DIR = FITNESS_DIR / "history"
 
 WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 
-NO_PROFILE = "(no fitness profile yet — run the intake interview before designing anything)"
-NO_PLAN = "(no workout plan yet — needs a completed profile first)"
+# Sentinels double as NEXT-ACTION directives: they are the only signal that
+# reaches a model mid-turn (including after an approval resume, where the
+# route node does not re-run), so they must say exactly what to do next —
+# a weak model will otherwise loop re-reading files until the circuit breaker.
+NO_PROFILE = (
+    "(no fitness profile yet) NEXT ACTION: stop calling tools this turn. Start the "
+    "intake interview in plain text — ask the first 2-4 questions from the "
+    "fitness_intake skill (goal + safety screen first). Do not design anything yet."
+)
+NO_PLAN_NO_PROFILE = (
+    "(no workout plan and no profile) NEXT ACTION: stop calling tools and start the "
+    "intake interview in conversation, per the fitness_intake skill."
+)
+NO_PLAN_PROFILE_READY = (
+    "(no workout plan yet) The profile EXISTS — you already have everything you need. "
+    "NEXT ACTION: no more read calls. Design the full 7-day week per the "
+    "gym_program_design skill, present it in text, then call save_workout_plan once."
+)
+
+
+def _no_plan_sentinel() -> str:
+    return NO_PLAN_PROFILE_READY if PROFILE_PATH.exists() else NO_PLAN_NO_PROFILE
 
 
 def _now() -> datetime:
@@ -117,7 +137,7 @@ def update_fitness_profile(content: str) -> str:
 @tool
 def get_workout_plan() -> str:
     """Read the current weekly workout plan."""
-    return _read(PLAN_PATH) or NO_PLAN
+    return _read(PLAN_PATH) or _no_plan_sentinel()
 
 
 @tool
@@ -140,10 +160,9 @@ def get_todays_workout() -> str:
     """Today's session from the weekly plan — exactly what the morning alert sends."""
     weekday, section = todays_session()
     if section is None:
-        plan_exists = PLAN_PATH.exists()
-        return (
-            f"(the plan has no section for {weekday})" if plan_exists else NO_PLAN
-        )
+        if PLAN_PATH.exists():
+            return f"(the plan has no section for {weekday})"
+        return _no_plan_sentinel()
     return section
 
 

@@ -26,6 +26,9 @@ Pregnant? Surgery in the last ~6 months?
 - All NO → cleared; still start light and build gradually.
 - Teach the in-session stop rules with the first plan: stop for chest pain,
   unusual breathlessness, lightheadedness, or palpitations.
+- HARD GATE: never save a workout plan while the profile's Health flags lack a
+  screen outcome — write "cleared" or "advised doctor first" explicitly. If the
+  screen hasn't happened yet, it is always the next question.
 
 ## 2. What to collect (MUST before designing; ask the rest as it fits)
 MUST: age, sex, height, weight · primary goal RANKED if several ("if only one
@@ -67,9 +70,11 @@ muscle ≈1-1.5% BW/month for new lifters, halve it per year of training.
    advanced. Someone "advanced" benching <1x BW is intermediate at most.
 5. Technique: machines-only or unsure on the big patterns caps them at beginner
    programming for those lifts regardless of anything else.
-Treat self-labels as one weak vote — people overstate. Tell them their level and
-why, kindly: it sets progression speed (per session / weekly / per block), volume
-(8-12 vs 10-20 sets/muscle/week) and split (per the gym_program_design skill).
+Never ask the owner to pick their own level — assess it with this rubric from
+their answers; self-labels are one weak vote and people overstate. Tell them the
+level you assessed and why, kindly: it sets progression speed (per session /
+weekly / per block), volume (8-12 vs 10-20 sets/muscle/week) and split (per the
+gym_program_design skill).
 
 ## 5. Saving the profile (update_fitness_profile)
 Write markdown with sections: Stats (age/sex/height/weight, date) · Goal (ranked,

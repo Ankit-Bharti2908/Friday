@@ -43,11 +43,23 @@ def _pack(vec: list[float]) -> bytes:
     return struct.pack(f"{len(vec)}f", *vec)
 
 
+_embed_warned = False  # warn once per outage; re-arms after a success
+
+
 async def _embed_safe(text: str) -> list[float] | None:
+    global _embed_warned
     try:
-        return await llm.aembed(text)
+        vec = await llm.aembed(text)
+        _embed_warned = False
+        return vec
     except Exception as exc:
-        log.warning("embedding unavailable (%s) — storing/searching without vectors", exc)
+        log.log(
+            logging.DEBUG if _embed_warned else logging.WARNING,
+            "embedding unavailable (%s) — storing/searching without vectors%s",
+            exc,
+            "" if _embed_warned else " (further failures logged at debug)",
+        )
+        _embed_warned = True
         return None
 
 
@@ -64,6 +76,16 @@ async def add_memory(
     vec = _vec if _vec is not None else await _embed_safe(text)
     conn = db.connect()
     try:
+        # Exact-text dedupe first — always works, even with embeddings down
+        # (the vector check below is skipped entirely offline, which used to
+        # let literal duplicates through).
+        row = conn.execute(
+            "SELECT text FROM memories WHERE deleted = 0 AND rtrim(lower(text), ' .') = ? LIMIT 1",
+            (text.lower().rstrip(" ."),),
+        ).fetchone()
+        if row:
+            return f"Already known: “{row[0]}”"
+
         if vec is not None:
             try:
                 row = conn.execute(
@@ -249,16 +271,18 @@ class _Candidates(BaseModel):
 
 
 _EXTRACT_PROMPT = """You maintain long-term memory for a personal assistant.
-From the exchange below, extract ONLY durable facts worth remembering for months
-(stable preferences, personal/work facts, ongoing projects, future events).
-Do NOT extract: one-off requests, transient tasks, anything already obvious.
+From the exchange below, extract AT MOST 2 durable facts worth remembering for
+months (stable preferences, personal/work facts, ongoing projects, future events).
+Do NOT extract: one-off requests, transient tasks, body stats or measurements,
+fitness-intake answers, workout/plan contents (the fitness profile file owns
+those), process notes ("user needs to provide X"), or anything already obvious.
 kind must be one of: fact, preference, project, event. Usually 0 items is correct.
 
 Exchange:
 {exchange}"""
 
 
-async def after_turn(messages: list[Any]) -> None:
+async def after_turn(messages: list[Any], agent_name: str = "") -> None:
     """Fire-and-forget after a completed turn. Never raises."""
     try:
         user_text = next(
@@ -271,11 +295,17 @@ async def after_turn(messages: list[Any]) -> None:
             return
         log_turn(user_text)
 
+        if agent_name == "gym":
+            # Fitness data lives in memory/fitness/PROFILE.md; the gym agent
+            # explicitly `remember`s its own one-line summary. Auto-extraction
+            # here only produces stat fragments that go stale.
+            return
+
         exchange = f"USER: {user_text[:800]}\nASSISTANT: {str(ai_text)[:800]}"
         cands = await llm.astructured(
             "fast", [{"role": "user", "content": _EXTRACT_PROMPT.format(exchange=exchange)}], _Candidates
         )
-        for c in cands.items:
+        for c in cands.items[:2]:
             if c.confidence >= 0.8:
                 result = await add_memory(c.text, c.kind, source="auto")
                 log.info("memory: %s", result)

@@ -75,7 +75,7 @@ async def on_message(message: cl.Message) -> None:
         if not interrupts:
             await cl.Message(content=last_ai_text(result) or "(no reply)").send()
             # Same fire-and-forget memory hook Telegram & CLI use — teach the shared brain.
-            asyncio.create_task(memory.after_turn(result.get("messages", [])))
+            asyncio.create_task(memory.after_turn(result.get("messages", []), result.get("agent_name", "")))
             return
 
         preview = interrupts[0].value.get("preview", "")
