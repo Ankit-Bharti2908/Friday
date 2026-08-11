@@ -38,6 +38,11 @@ def get(name: str) -> AgentProfile:
     return PROFILES.get(name, GENERAL)
 
 
+def _server_of(tool) -> str:
+    """Which MCP server a tool came from (core/tools.py tags them on load)."""
+    return (getattr(tool, "metadata", None) or {}).get("mcp_server", "")
+
+
 def filter_tools(profile: AgentProfile, tools: list) -> list:
     """Tool subset for a profile; falls back to all tools if the filter
     would leave the agent with nothing domain-specific. `tool_exclude`
@@ -48,7 +53,9 @@ def filter_tools(profile: AgentProfile, tools: list) -> list:
     kept = [
         t
         for t in allowed
-        if t.name in ALWAYS_INCLUDE or any(k in t.name.lower() for k in profile.tool_keywords)
+        if t.name in ALWAYS_INCLUDE
+        or any(k in t.name.lower() for k in profile.tool_keywords)
+        or _server_of(t) in profile.tool_servers
     ]
     domain_tools = [t for t in kept if t.name not in ALWAYS_INCLUDE]
     return kept if domain_tools else allowed

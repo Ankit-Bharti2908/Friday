@@ -50,6 +50,15 @@ def test_policies() -> None:
     assert approval.requires_approval("update_diet_profile")
     assert not approval.requires_approval("get_diet_plan")
     assert not approval.requires_approval("get_recent_diet_plans")
+    # money moves through the catalog: browsing is free, spending always pauses
+    assert not approval.requires_approval("search_restaurants")
+    assert not approval.requires_approval("get_menu")
+    assert approval.requires_approval("add_to_cart")
+    assert approval.requires_approval("place_order")       # 'place_' pattern
+    assert approval.requires_approval("confirm_order")     # default-deny
+    assert approval.requires_approval("checkout")
+    assert approval.requires_approval("book_table")
+    assert approval.requires_approval("make_payment")
     # destructive resets must pause (forget via default-deny, delete_ via pattern)
     assert approval.requires_approval("forget")
     assert approval.requires_approval("delete_fitness_data")
@@ -191,7 +200,7 @@ def test_prompt_and_skills() -> None:
     all_skills = skills.load_all()
     assert {s.name for s in all_skills} >= {
         "email_style", "daily_note_format", "fitness_intake", "gym_program_design",
-        "diet_intake", "diet_day_plan",
+        "diet_intake", "diet_day_plan", "food_ordering",
     }
     hit = skills.match("build me a workout plan for the week", "general")
     assert any(s.name == "gym_program_design" for s in hit)
@@ -241,6 +250,23 @@ def test_registry_filtering() -> None:
     # exclusion survives the no-domain-tools fallback (which returns everything else)
     fallback = registry.filter_tools(registry.get("diet"), [fake("save_workout_plan"), fake("remember")])
     assert {t.name for t in fallback} == {"remember"}
+    # catalog tools are claimed by SERVER, so vendor tool names don't matter
+    def mcp_fake(name: str, server: str):
+        return SimpleNamespace(name=name, description="d", metadata={"mcp_server": server})
+
+    catalog = [mcp_fake("someVendorNameWeCannotPredict", "swiggy_food"),
+               mcp_fake("im_product_lookup", "swiggy_instamart"),
+               mcp_fake("read_file", "filesystem")]
+    diet_catalog = {t.name for t in registry.filter_tools(registry.get("diet"), tools + catalog)}
+    assert {"someVendorNameWeCannotPredict", "im_product_lookup"} <= diet_catalog
+    assert "read_file" not in diet_catalog          # unclaimed server stays out
+    # the gym agent gets no catalog access (it has domain tools here, so the
+    # everything-back fallback is not in play — this tests the filter itself)
+    gym_catalog = {
+        t.name
+        for t in registry.filter_tools(registry.get("gym"), catalog + [fake("get_todays_workout")])
+    }
+    assert gym_catalog == {"get_todays_workout"}
     print("registry filter   OK")
 
 
@@ -459,6 +485,62 @@ def test_nutrition_roundtrip() -> None:
     print("diet roundtrip    OK")
 
 
+def test_mcp_oauth_store() -> None:
+    """Token storage round-trip + the boot-time skip for un-authorized servers,
+    against a TEMP dir so a real installation's tokens are never touched."""
+    import tempfile
+    from pathlib import Path
+
+    from mcp.shared.auth import OAuthToken
+
+    from core import mcp_auth, tools as core_tools
+
+    orig = mcp_auth.OAUTH_DIR
+    mcp_auth.OAUTH_DIR = Path(tempfile.mkdtemp(prefix="friday-oauth-smoke-"))
+    try:
+        assert not mcp_auth.is_authorized("swiggy_food")     # nothing stored yet
+        store = mcp_auth.FileTokenStorage("swiggy_food")
+
+        async def flow():
+            assert await store.get_tokens() is None
+            await store.set_tokens(OAuthToken(access_token="tok", token_type="Bearer",
+                                              refresh_token="ref", expires_in=3600))
+            got = await store.get_tokens()
+            assert got and got.access_token == "tok" and got.refresh_token == "ref"
+
+        asyncio.run(flow())
+        assert mcp_auth.is_authorized("swiggy_food")
+        assert oct(store.path.stat().st_mode)[-3:] == "600"  # credential material
+
+        # an oauth server is SKIPPED (not errored) until it has been logged in
+        conf = {"transport": "streamable_http", "url": "https://mcp.swiggy.com/im", "oauth": True}
+        assert core_tools._prepare("swiggy_instamart", conf) is None
+        prepared = core_tools._prepare("swiggy_food", conf)
+        assert prepared is not None and "auth" in prepared and "oauth" not in prepared
+        assert conf["oauth"] is True                          # loaded config not mutated
+        # non-oauth servers pass through untouched
+        plain = {"transport": "stdio", "command": "npx"}
+        assert core_tools._prepare("filesystem", plain) == plain
+    finally:
+        mcp_auth.OAUTH_DIR = orig
+    print("mcp oauth store   OK")
+
+
+def test_mcp_config() -> None:
+    """The Swiggy servers are wired the way the vendor manifest specifies."""
+    servers = settings.MCP["servers"]
+    for name, url in (("swiggy_food", "https://mcp.swiggy.com/food"),
+                      ("_swiggy_instamart", "https://mcp.swiggy.com/im"),
+                      ("_swiggy_dineout", "https://mcp.swiggy.com/dineout")):
+        conf = servers[name]
+        assert conf["url"] == url and conf["oauth"] is True
+        assert conf["transport"] == "streamable_http"   # what the adapter understands
+    # the diet agent claims them by server name, underscore-free
+    claimed = registry.get("diet").tool_servers
+    assert {"swiggy_food", "swiggy_instamart", "swiggy_dineout"} == set(claimed)
+    print("mcp config        OK")
+
+
 def test_heartbeat_parse_and_notify() -> None:
     text = 'Here you go:\n[{"key": "pr:friday#1", "message": "PR #1 awaits your review"}]'
     items = _parse_findings(text)
@@ -489,5 +571,7 @@ if __name__ == "__main__":
     test_render_preview()
     test_fitness_roundtrip()
     test_nutrition_roundtrip()
+    test_mcp_oauth_store()
+    test_mcp_config()
     test_heartbeat_parse_and_notify()
     print("\nall smoke tests passed ✔")

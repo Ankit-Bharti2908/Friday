@@ -57,7 +57,7 @@ _KEYWORDS: dict[str, tuple[str, ...]] = {
     "fitness": ("gym", "workout", "workouts", "deadlift", "deadlifts", "squat", "squats",
                 "bench press", "treadmill", "cardio", "reps", "build muscle", "hypertrophy"),
     "diet": ("diet", "diets", "meal", "meals", "nutrition", "macros", "calorie",
-             "calories", "protein"),
+             "calories", "protein", "swiggy", "instamart", "dineout"),
     "email": ("email", "emails", "e-mail", "inbox", "gmail", "mail"),
     "calendar": ("calendar", "meeting", "meetings", "appointment", "appointments", "reschedule"),
     "code": ("github", "repo", "repos", "repository", "pull request", "python", "traceback"),
@@ -109,7 +109,8 @@ _PROMPT = """Classify the user's message for a personal assistant. Intents:
 - code: GitHub, PRs, issues, repos, programming help, running code
 - research: questions needing web search / reading sources / comparisons
 - fitness: gym training, workout plans, exercises, logging a workout, body/weight goals, cardio
-- diet: meal plans, what to eat, calories/macros/protein targets, dietary preferences, nutrition
+- diet: meal plans, what to eat, calories/macros/protein targets, dietary preferences, nutrition,
+  ordering food or groceries (Swiggy/Instamart/Dineout)
 - memory: asking the assistant to remember/forget/recall things about the user
 - task: file operations, reminders, todos, misc actions
 - chat: everything else (small talk, opinions, quick answers)

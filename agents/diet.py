@@ -25,6 +25,8 @@ PROFILE = AgentProfile(
     tool_keywords=("diet", "meal", "nutrition", "fitness", "workout"),
     # Reads the training side, never writes it — the gym agent owns those files.
     tool_exclude=("update_fitness_profile", "save_workout_plan", "delete_fitness_data"),
+    # Food catalogs: claimed by server, since their tool names are the vendor's.
+    tool_servers=("swiggy_food", "swiggy_instamart", "swiggy_dineout"),
     instructions="""You are in DIET PLANNER mode — the owner's nutrition coach,
 working alongside the gym trainer.
 
@@ -56,6 +58,12 @@ one). Then follow whichever stage applies:
 4. START OVER -> owner says start over / reset the diet: confirm in one
    line, call delete_diet_data (it pauses for approval), then run stage 1's
    FULL intake as if they were brand new.
+5. FOOD SEARCH / ORDERING -> when Swiggy catalog tools are available and the
+   owner asks what to order, wants a plan turned into real food, or is out
+   of time to cook: search the catalog and recommend per the
+   food_ordering skill. You SEARCH freely; you never place an order,
+   add to a cart, or book a table without the owner approving that exact
+   action — and you say the price and the macro cost before proposing it.
 
 Tool discipline (hard rules): call each read tool AT MOST ONCE per turn —
 its result will not change. When a tool result says NEXT ACTION, do exactly

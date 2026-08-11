@@ -58,6 +58,7 @@ core/              The engine. No business logic about "email" or "calendar" liv
   graph.py           The LangGraph state machine (route → agent → tool_gate → tools).
   approval.py        Policy: which tools auto-run vs. pause vs. are blocked.
   tools.py           Loads MCP servers from config/mcp.json into LangChain tools.
+  mcp_auth.py        OAuth 2.1 + PKCE + DCR for remote MCP servers (Swiggy); token store + login CLI.
   memory.py          Long-term memory (vector + keyword), daily notes, extraction hook.
   fitness.py         Gym-trainer data layer: profile/plan/log markdown + tools + today's session.
   nutrition.py       Diet-planner data layer: profile + per-day meal plans + tools + today's plan.
@@ -88,7 +89,7 @@ identity/          Friday's personality & knowledge, as editable markdown (no re
   HEARTBEAT.md       The proactive checklist the heartbeat job runs.
 
 skills/            *.md workflow snippets (email_style, daily_note_format, fitness_intake,
-                   gym_program_design, diet_intake, diet_day_plan).
+                   gym_program_design, diet_intake, diet_day_plan, food_ordering).
 config/            models.json (tiers), policies.json (approval rules), mcp.json (servers).
 memory/            MEMORY.md (human-readable mirror of the DB) + notes/ (daily logs)
                    + fitness/ (profile, plan, log) + nutrition/ (profile, days/).
@@ -247,6 +248,7 @@ class AgentProfile:
     tier: str = "standard"                  # which LLM tier this agent uses
     tool_keywords: tuple[str, ...] | None   # substring filter over tool names
     tool_exclude: tuple[str, ...] = ()      # exact names dropped after matching
+    tool_servers: tuple[str, ...] = ()      # whole MCP servers this profile claims
     instructions: str = ""                  # injected into the system prompt
 ```
 
@@ -258,7 +260,7 @@ class AgentProfile:
 | coder     | standard | github, git, repo, pull, issue, commit, file, python | PRs / issues / code |
 | research  | **deep** | search, fetch, web, browse, read, url, http          | multi-step web research |
 | gym       | standard | fitness, workout, exercise, gym, cardio, health      | intake / plans / coaching |
-| diet      | standard | diet, meal, nutrition, fitness, workout              | intake / targets / day menus |
+| diet      | standard | diet, meal, nutrition, fitness, workout (+ the Swiggy servers) | intake / targets / day menus / catalog search |
 
 `registry.filter_tools()` keeps a tool if its name contains any profile keyword
 **or** it's in `ALWAYS_INCLUDE = {remember, recall_memories, forget, run_python}`.
@@ -268,6 +270,10 @@ If the filter would leave no domain-specific tools, it **falls back to all tools
 keywords are coarse, so the diet agent (`fitness`, `workout`) would otherwise
 inherit `save_workout_plan` / `update_fitness_profile`; it reads the training
 side and never writes it. Not having the tool beats a prompt rule saying don't.
+`tool_servers` works the other way — it claims tools by their **origin MCP server**
+rather than their name, because a third-party server names its ~35 tools however it
+likes and guessing substrings would be brittle. The diet agent claims the Swiggy
+servers this way; no other profile can reach the catalog.
 
 **Adding a subagent = one file** exporting `PROFILE`, plus one import line in
 `registry.py`. No graph changes.
@@ -333,9 +339,37 @@ Claude-Desktop-style server config. Conventions:
   never blocks the others.
 - Tools in `blocked_tools` are filtered out before the model ever sees them.
 - Warns if > 40 tools load (big tool lists burn context and confuse routing).
+- Every loaded tool is tagged with its origin server in `tool.metadata["mcp_server"]`,
+  which is what lets a profile claim a whole server (see `tool_servers` above).
 
 **Adding a capability = adding an entry to `mcp.json`.** That's the whole
 modularity story for integrations.
+
+### OAuth MCP servers (`core/mcp_auth.py`)
+Swiggy's servers (`/food`, `/im`, `/dineout` on `mcp.swiggy.com`, streamable HTTP)
+use **OAuth 2.1 + PKCE with RFC 7591 dynamic client registration** — there is no
+static key, so the usual `${ENV_VAR}` header trick doesn't apply. A server marked
+`"oauth": true` in `mcp.json` gets an `OAuthClientProvider` (an `httpx.Auth`) built
+for it and passed to the adapter as `auth`.
+
+The grant is obtained once, interactively:
+
+```bash
+uv run python -m core.mcp_auth login swiggy_food
+```
+
+which spins a loopback listener on `http://127.0.0.1:${FRIDAY_OAUTH_PORT}/callback`
+(RFC 8252; Swiggy whitelists loopback), drives discovery → registration → consent →
+token exchange, then prints the tools the server actually exposes. Tokens and the
+registered client live in `memory/oauth/<server>.json` at chmod 600 — **account
+credentials**: a Swiggy token can place real orders, so that directory is gitignored
+and belongs in the same mental bucket as `.env`.
+
+At boot, an OAuth server with no stored grant is **skipped with an INFO hint**, not
+treated as an error — Friday comes up with every other tool and tells you the one
+command to fix it. Refreshes happen automatically inside the provider; if the grant
+is revoked the provider raises with the re-login command rather than hanging on a
+browser prompt nobody is watching.
 
 ### Memory tools (`core/memory.py`)
 `remember`, `recall_memories`, `forget` — exposed to the agent so it can manage
@@ -446,7 +480,7 @@ Matched when **any trigger substring is in the message** *or* **the active profi
 is listed in `agents`** (`all` = every profile). Files are **re-read on every
 match** — edit a skill and behavior changes on the very next message, no restart.
 Ships with `email_style`, `daily_note_format`, `fitness_intake`,
-`gym_program_design`, `diet_intake`, `diet_day_plan`.
+`gym_program_design`, `diet_intake`, `diet_day_plan`, `food_ordering`.
 
 This is the lightweight alternative to hardcoding workflows: prompt-level behavior
 lives in editable text, versioned alongside the code. The gym and diet agents lean

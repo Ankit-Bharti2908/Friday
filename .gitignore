@@ -4,6 +4,8 @@
 !.env.example
 wa-auth/
 bridge/whatsapp/wa-auth/
+# OAuth tokens for remote MCP servers (Swiggy et al) — account credentials
+memory/oauth/
 
 # --- Personal identity (real file is private; *.example.md is the template) ---
 identity/USER.md
