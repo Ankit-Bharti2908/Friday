@@ -39,12 +39,43 @@ def requires_approval(tool_name: str) -> bool:
     return _DEFAULT == "require_approval"
 
 
+# Tools whose content arg is a document the human must actually read before
+# approving — rendered as plain text with a roomier limit. 3500 stays under
+# Telegram's 4096/message even with the "Approval needed" header.
+_CONTENT_PREVIEW_TOOLS = {
+    "save_workout_plan", "update_fitness_profile",
+    "save_diet_plan", "update_diet_profile",
+}
+_PREVIEW_LIMIT = 1200
+_PREVIEW_LIMIT_CONTENT = 3500
+
+
 def render_preview(tool_calls: list[dict[str, Any]]) -> str:
-    """Human-readable preview of pending actions for the approval message."""
+    """Human-readable preview of pending actions for the approval message.
+
+    A single string arg containing a document (newlines / long text) renders
+    as plain text — json.dumps would escape every newline into an unreadable
+    one-liner, which is worse than truncation."""
     blocks: list[str] = []
     for i, call in enumerate(tool_calls, 1):
-        args = json.dumps(call.get("args", {}), indent=2, ensure_ascii=False, default=str)
-        if len(args) > 1200:
-            args = args[:1200] + "\n… (truncated)"
-        blocks.append(f"{i}. {call['name']}\n{args}")
+        name, args = call["name"], call.get("args", {})
+        limit = _PREVIEW_LIMIT_CONTENT if name in _CONTENT_PREVIEW_TOOLS else _PREVIEW_LIMIT
+        values = list(args.values()) if isinstance(args, dict) else []
+        docs = [(k, v) for k, v in (args.items() if isinstance(args, dict) else [])
+                if isinstance(v, str) and ("\n" in v or len(v) > 200)]
+        # Plain-text path: a lone document arg on any tool, or a content tool's
+        # document plus short scalar extras (save_diet_plan carries content+date).
+        if len(docs) == 1 and (len(values) == 1 or name in _CONTENT_PREVIEW_TOOLS):
+            key, full = docs[0]
+            body = full
+            if len(body) > limit:
+                body = body[:limit] + f"\n… (truncated — {len(full)} chars total; the full text is saved on approve)"
+            extras = " · ".join(f"{k}={v!r}" for k, v in args.items() if k != key and v != "")
+            header = f"{i}. {name} · {key} ({len(full)} chars)" + (f" · {extras}" if extras else "")
+            blocks.append(f"{header}\n{body}")
+        else:
+            rendered = json.dumps(args, indent=2, ensure_ascii=False, default=str)
+            if len(rendered) > limit:
+                rendered = rendered[:limit] + f"\n… (truncated — {len(rendered)} chars total)"
+            blocks.append(f"{i}. {name}\n{rendered}")
     return "\n\n".join(blocks)

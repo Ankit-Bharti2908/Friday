@@ -3,10 +3,10 @@
 Format (tiny frontmatter, no YAML dependency):
 
     ---
-    name: rca_summary
-    description: How I write RCA summaries
-    triggers: rca, root cause, escalation summary
-    agents: general, email
+    name: email_style
+    description: How Ankit writes emails
+    triggers: draft, reply, email, mail
+    agents: email
     ---
     <body injected into the system prompt when matched>
 

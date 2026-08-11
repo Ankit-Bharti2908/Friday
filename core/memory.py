@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import struct
 from datetime import datetime, timedelta
 from typing import Any
@@ -43,11 +44,23 @@ def _pack(vec: list[float]) -> bytes:
     return struct.pack(f"{len(vec)}f", *vec)
 
 
+_embed_warned = False  # warn once per outage; re-arms after a success
+
+
 async def _embed_safe(text: str) -> list[float] | None:
+    global _embed_warned
     try:
-        return await llm.aembed(text)
+        vec = await llm.aembed(text)
+        _embed_warned = False
+        return vec
     except Exception as exc:
-        log.warning("embedding unavailable (%s) — storing/searching without vectors", exc)
+        log.log(
+            logging.DEBUG if _embed_warned else logging.WARNING,
+            "embedding unavailable (%s) — storing/searching without vectors%s",
+            exc,
+            "" if _embed_warned else " (further failures logged at debug)",
+        )
+        _embed_warned = True
         return None
 
 
@@ -64,6 +77,16 @@ async def add_memory(
     vec = _vec if _vec is not None else await _embed_safe(text)
     conn = db.connect()
     try:
+        # Exact-text dedupe first — always works, even with embeddings down
+        # (the vector check below is skipped entirely offline, which used to
+        # let literal duplicates through).
+        row = conn.execute(
+            "SELECT text FROM memories WHERE deleted = 0 AND rtrim(lower(text), ' .') = ? LIMIT 1",
+            (text.lower().rstrip(" ."),),
+        ).fetchone()
+        if row:
+            return f"Already known: “{row[0]}”"
+
         if vec is not None:
             try:
                 row = conn.execute(
@@ -133,7 +156,32 @@ async def recall(query: str, k: int = 5, _vec: list[float] | None = None) -> lis
         conn.close()
 
 
+_FORGET_ALL = frozenset({
+    "all", "everything", "*", "all memories", "everything you know",
+    "everything you know about me", "everything about me",
+})
+
+
 async def forget_matching(query: str) -> str:
+    norm = " ".join(query.lower().split()).strip(" .!'\"")
+    if norm in _FORGET_ALL:  # full wipe — before the embed call, works offline
+        conn = db.connect()
+        try:
+            n = conn.execute("UPDATE memories SET deleted = 1 WHERE deleted = 0").rowcount
+            try:
+                conn.execute("DELETE FROM vec_memories")
+            except Exception:
+                pass
+            conn.commit()
+            _rewrite_markdown(conn)
+        finally:
+            conn.close()
+        return (
+            f"Forgot ALL long-term memories ({n} erased). Note: the fitness and "
+            "diet files are separate — for a full reset also call "
+            "delete_fitness_data and delete_diet_data."
+        )
+
     vec = await _embed_safe(query)
     conn = db.connect()
     try:
@@ -249,16 +297,49 @@ class _Candidates(BaseModel):
 
 
 _EXTRACT_PROMPT = """You maintain long-term memory for a personal assistant.
-From the exchange below, extract ONLY durable facts worth remembering for months
-(stable preferences, personal/work facts, ongoing projects, future events).
-Do NOT extract: one-off requests, transient tasks, anything already obvious.
+From the exchange below, extract AT MOST 2 durable facts worth remembering for
+months (stable preferences, personal/work facts, ongoing projects, future events).
+Do NOT extract: one-off requests, transient tasks, body stats or measurements,
+fitness/diet-intake answers, workout or meal plan contents (the fitness and
+diet profile files own those), process notes ("user needs to provide X"), or
+anything already obvious.
 kind must be one of: fact, preference, project, event. Usually 0 items is correct.
+
+Examples of GOOD memories (durable, about the person):
+  {{"text": "User's manager is Sandeep", "kind": "fact"}}
+  {{"text": "User wants to run a marathon in late 2027", "kind": "event"}}
+  {{"text": "User prefers uv over pip for Python work", "kind": "preference"}}
+Examples of BAD memories (never output these — process/transient notes):
+  "User has not specified fitness goals or workout preferences yet"
+  "User wants to start a new workout plan"
+  "User is asking for a summary of unread email"
 
 Exchange:
 {exchange}"""
 
 
-async def after_turn(messages: list[Any]) -> None:
+# Backstop for extractors that ignore the prompt's process-note ban (weak
+# models do): drop obvious "conversation state" shapes. Deliberately narrow —
+# the has-not arm only matches information-giving verbs ("has not eaten meat
+# since 2019" survives) and the wants-to-start arm only fires near process
+# artifacts ("wants to start training for a marathon" survives).
+_TRANSIENT_RE = re.compile(
+    r"^user\s+(?:"
+    r"(?:has\s+not|hasn'?t)\s+(?:yet\s+)?(?:specified|provided|mentioned|shared|answered|confirmed|decided|given|chosen)\b"
+    r"|needs?\s+to\s+(?:provide|specify|share|confirm|complete|answer|decide|clarify)\b"
+    r"|is\s+(?:asking|requesting|inquiring)\b"
+    r"|(?:is\s+(?:starting|beginning)|(?:wants?|would\s+like)\s+to\s+(?:start|create|make|begin|set\s+up|build|get))"
+    r"(?=.{0,60}\b(?:plan|profile|intake|routine|program|questionnaire|assessment|diet)\b)"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _looks_transient(text: str) -> bool:
+    return bool(_TRANSIENT_RE.match(text.strip()))
+
+
+async def after_turn(messages: list[Any], agent_name: str = "") -> None:
     """Fire-and-forget after a completed turn. Never raises."""
     try:
         user_text = next(
@@ -271,14 +352,24 @@ async def after_turn(messages: list[Any]) -> None:
             return
         log_turn(user_text)
 
+        if agent_name in ("gym", "diet"):
+            # Fitness/diet data lives in memory/fitness/ and memory/nutrition/;
+            # those agents explicitly `remember` their own one-line summaries.
+            # Auto-extraction here only produces stat fragments that go stale.
+            return
+
         exchange = f"USER: {user_text[:800]}\nASSISTANT: {str(ai_text)[:800]}"
         cands = await llm.astructured(
             "fast", [{"role": "user", "content": _EXTRACT_PROMPT.format(exchange=exchange)}], _Candidates
         )
-        for c in cands.items:
-            if c.confidence >= 0.8:
-                result = await add_memory(c.text, c.kind, source="auto")
-                log.info("memory: %s", result)
+        for c in cands.items[:2]:
+            if c.confidence < 0.8:
+                continue
+            if _looks_transient(c.text):
+                log.debug("extraction dropped as transient: %s", c.text[:80])
+                continue
+            result = await add_memory(c.text, c.kind, source="auto")
+            log.info("memory: %s", result)
     except Exception as exc:
         log.debug("after_turn hook skipped (%s)", exc)
 
@@ -299,7 +390,7 @@ async def recall_memories(query: str) -> str:
 
 @tool
 async def forget(query: str) -> str:
-    """Delete long-term memories matching the query (use when the user says to forget something)."""
+    """Delete long-term memories matching the query (use when the user says to forget something). Pass query='all' or 'everything' to erase ALL memories when the user asks to forget everything / start from scratch."""
     return await forget_matching(query)
 
 

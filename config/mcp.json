@@ -5,6 +5,21 @@
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "${FRIDAY_WORKSPACE}"]
     },
+    "swiggy_food": {
+      "transport": "streamable_http",
+      "url": "https://mcp.swiggy.com/food",
+      "oauth": true
+    },
+    "_swiggy_instamart": {
+      "transport": "streamable_http",
+      "url": "https://mcp.swiggy.com/im",
+      "oauth": true
+    },
+    "_swiggy_dineout": {
+      "transport": "streamable_http",
+      "url": "https://mcp.swiggy.com/dineout",
+      "oauth": true
+    },
     "_github_remote": {
       "transport": "streamable_http",
       "url": "https://api.githubcopilot.com/mcp/",

@@ -5,9 +5,10 @@ code sandbox), no Postgres, no proxy servers.
 
 **What it does:** Telegram (text + voice) and optional WhatsApp/web gateways →
 intent router picks a specialist agent (email / calendar / coder / research /
-general) → MCP tools do the work → every risky action pauses for your
-Approve / Reject / Edit → it remembers you across sessions → 8 AM briefing,
-30-min heartbeat alerts, nightly note consolidation → everything traced in Phoenix.
+gym trainer / diet planner / general) → MCP tools do the work → every risky
+action pauses for your Approve / Reject / Edit → it remembers you across
+sessions → 8 AM briefing, 30-min heartbeat alerts, daily workout + diet
+alerts, nightly note consolidation → everything traced in Phoenix.
 
 ## Quickstart
 
@@ -47,23 +48,46 @@ uv run python main.py            # message your bot on Telegram
   feeds the same shared long-term memory. Run it alongside `main.py`; both share the db.
 
 ## The agentic core
-- **Router** (`core/router.py`): fast-tier classification → profile. <0.6 confidence → general.
+- **Router** (`core/router.py`): deterministic fast path first — unambiguous keywords
+  route instantly and short in-flow follow-ups skip the LLM entirely — then fast-tier
+  classification. Sticky: low confidence or a short follow-up ("yes", "??") continues
+  with the previous specialist, else general.
 - **Profiles** (`agents/*.py`): tier + tool subset + instructions. New subagent = one small file.
 - **Skills** (`skills/*.md`): drop a markdown file with triggers; it's injected when matched.
   Re-read every message — edit a skill, behavior changes immediately. Ships with
-  `email_style`, `rca_summary`, `daily_note_format`.
+  `email_style`, `daily_note_format`, `fitness_intake`, `gym_program_design`,
+  `diet_intake`, `diet_day_plan`, `food_ordering`.
 - **Memory** (`core/memory.py`): SQLite + sqlite-vec is the truth, `memory/MEMORY.md` is the
   mirror. Recall is injected each turn; a post-turn hook extracts durable facts (≥0.8
   confidence); say "remember/forget X" for explicit control. Daily notes in `memory/notes/`,
   consolidated nightly at 23:30.
+- **Gym trainer** (`agents/gym.py` + `core/fitness.py`): say "make me a workout plan" — it
+  runs a coach-style intake interview (goal, schedule, equipment, health screen), assesses
+  your level, and proposes a 7-day plan you approve. Profile/plan/log are editable markdown
+  in `memory/fitness/`; every morning (`FRIDAY_WORKOUT_ALERT`, default 06:30) it pings you
+  with that day's session. Knowledge lives in `skills/fitness_intake.md` + `gym_program_design.md`.
+- **Diet planner** (`agents/diet.py` + `core/nutrition.py`): say "make me a diet plan" — it
+  interviews you (eating pattern, allergies, cuisine, budget, medical screen), derives daily
+  calorie/macro targets showing the math, then plans ONE day's meals at a time around that
+  day's workout. Profile + day plans are markdown in `memory/nutrition/`; each morning
+  (`FRIDAY_DIET_ALERT`, default 07:00) it sends today's saved menu — silent on unplanned
+  days. Knowledge lives in `skills/diet_intake.md` + `diet_day_plan.md`.
+- **Food catalog** (Swiggy MCP): with `swiggy_food` authorized, the diet planner searches
+  real restaurants/dishes (and Instamart groceries) and recommends 2-3 options costed
+  against what's left of today's calories and protein. Searching is free; carts, orders,
+  bookings and payments always pause for your approval (`skills/food_ordering.md`).
 - **Reflection:** two consecutive tool failures trigger a forced critique-and-change-approach.
 - **Proactivity** (`core/scheduler.py`): briefing 08:00, heartbeat every 30 min 08–22 (runs
   `identity/HEARTBEAT.md` on the read-only autonomous graph; findings deduped via `alerts_sent`
-  so nothing pings twice), quiet-hours queue flushed 07:35.
+  so nothing pings twice), workout alert at `FRIDAY_WORKOUT_ALERT` (no LLM — sends today's
+  section of `memory/fitness/PLAN.md`, deduped per day), diet alert at `FRIDAY_DIET_ALERT`
+  (no LLM — sends `memory/nutrition/days/<today>.md` when it exists), quiet-hours queue
+  flushed 07:35.
 
 ## Safety model (don't weaken these)
 1. Channel allowlists are hardcoded to you (Telegram user id, WhatsApp JID).
-2. Reads run free; `send_/create_/delete_/run_…` pause for approval; **unknown tools
+2. Reads run free; `send_/create_/delete_/run_…` and anything that spends money
+   (`cart/checkout/payment/place_/book/reserve`) pause for approval; **unknown tools
    require approval by default** (`config/policies.json`). Audit: `tool_audit` table.
 3. Background jobs use an autonomous graph that **auto-rejects** all writes.
 4. Web/email content is treated as data, not instructions (see SOUL.md rule 3).
@@ -76,6 +100,22 @@ uv run python main.py            # message your bot on Telegram
 `_github_remote` (hosted GitHub MCP, needs `GITHUB_TOKEN`) and `_google_workspace`
 (Gmail+Calendar via `workspace-mcp` — follow that project's README for OAuth, then
 pin its version). One broken server never blocks the others.
+
+**Swiggy** (`swiggy_food` enabled, `_swiggy_instamart` / `_swiggy_dineout` ready to
+enable) authenticates with OAuth 2.1 + PKCE and dynamic client registration — there's
+no key to paste. Authorize once in a browser:
+
+```bash
+uv run python -m core.mcp_auth login swiggy_food   # prints/opens the consent URL
+uv run python -m core.mcp_auth status              # what's connected
+```
+
+Tokens land in `memory/oauth/*.json` (chmod 600, gitignored) and refresh themselves;
+until you log in the server is skipped with a one-line hint, so Friday still boots.
+`login` prints the tool list the server actually exposes — worth a look, since Swiggy
+ships ~35 tools across the three servers and enabling all of them is a lot of context.
+The `logout` subcommand deletes the tokens. Ordering is COD-only and Dineout supports
+free bookings only, per Swiggy's manifest.
 
 ## Model tiers
 `config/models.json`: `fast` / `standard` / `deep`, each `[primary, …fallbacks]` in
@@ -95,12 +135,12 @@ through to the next entry, so cloud keys remain a safe optional backstop.
 
 ## Layout
 ```
-core/      settings · db · llm · prompts · approval · tools · graph · router · skills · memory · notify · scheduler · sandbox
-agents/    registry + profiles (email, research, coder, calendar) · briefing · heartbeat
+core/      settings · db · llm · prompts · approval · tools · mcp_auth · graph · router · skills · memory · fitness · nutrition · notify · scheduler · sandbox
+agents/    registry + profiles (email, research, coder, calendar, gym, diet) · briefing · heartbeat
 channels/  telegram · cli · whatsapp · web
 bridge/    whatsapp/ (Baileys Node sidecar)
 identity/  SOUL.md · USER.md · HEARTBEAT.md      skills/  *.md
-memory/    MEMORY.md (mirror) · notes/            config/  models · mcp · policies
+memory/    MEMORY.md (mirror) · notes/ · fitness/ · nutrition/   config/  models · mcp · policies
 tests/     smoke · routing_cases · eval_routing   scripts/ backup.sh
 ```
 

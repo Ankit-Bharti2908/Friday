@@ -193,7 +193,7 @@ async def _run_graph(update: Update, context: ContextTypes.DEFAULT_TYPE, payload
 
     await _send_long(context, chat_id, last_ai_text(result) or "(no reply)")
     # Memory hook: never blocks the reply, never raises.
-    asyncio.create_task(memory.after_turn(result.get("messages", [])))
+    asyncio.create_task(memory.after_turn(result.get("messages", []), result.get("agent_name", "")))
 
 
 async def _keep_typing(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:

@@ -68,6 +68,8 @@ async def astructured(tier: str, messages: list[dict[str, Any]], schema: Type[T]
         resp = await acomplete(tier, messages, response_format=schema)
         raw = resp.choices[0].message.content or ""
         return schema.model_validate_json(_strip_fences(raw))
+    except AllModelsFailed:
+        raise  # the whole tier is down — a second walk of the same chain can't succeed
     except Exception as exc:
         log.debug("native structured output failed (%s) — falling back to prompted JSON", exc)
 

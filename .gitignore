@@ -4,6 +4,8 @@
 !.env.example
 wa-auth/
 bridge/whatsapp/wa-auth/
+# OAuth tokens for remote MCP servers (Swiggy et al) — account credentials
+memory/oauth/
 
 # --- Personal identity (real file is private; *.example.md is the template) ---
 identity/USER.md
@@ -18,6 +20,10 @@ friday.db-wal
 memory/MEMORY.md
 # daily notes are runtime data
 memory/notes/
+# fitness profile/plan/log are personal runtime data
+memory/fitness/
+# diet profile + daily meal plans are personal runtime data
+memory/nutrition/
 
 # --- Python ---
 __pycache__/
