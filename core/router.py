@@ -20,7 +20,7 @@ from core import llm
 
 log = logging.getLogger("friday.router")
 
-Intent = Literal["email", "calendar", "code", "research", "fitness", "memory", "task", "chat"]
+Intent = Literal["email", "calendar", "code", "research", "fitness", "diet", "memory", "task", "chat"]
 
 INTENT_TO_PROFILE = {
     "email": "email",
@@ -28,6 +28,7 @@ INTENT_TO_PROFILE = {
     "code": "coder",
     "research": "research",
     "fitness": "gym",
+    "diet": "diet",
     "memory": "general",
     "task": "general",
     "chat": "general",
@@ -44,8 +45,9 @@ SHORT_FOLLOWUP_CHARS = 40  # "yes", "??", "ok do that" — too short to re-route
 # Deterministic fast path that avoids the classify() LLM call entirely when
 # the message is unambiguous. Keywords are deliberately high-precision only:
 # ambiguous words (schedule, training, pr, bench, session, plan, exercise,
-# sets, muscle, draft, run) are EXCLUDED — a wrong deterministic route at
-# conf=1.0 is worse than paying for the LLM's guess.
+# sets, muscle, draft, run, eat, breakfast/lunch/dinner — social/calendar
+# uses) are EXCLUDED — a wrong deterministic route at conf=1.0 is worse
+# than paying for the LLM's guess.
 PREROUTER_SKIP_CHARS = 25  # tighter than SHORT_FOLLOWUP_CHARS on purpose: below
 # this, today's sticky pipeline keeps prev for every general-mapped intent
 # anyway, so skipping the LLM changes nothing except keywordless sub-25-char
@@ -54,6 +56,8 @@ PREROUTER_SKIP_CHARS = 25  # tighter than SHORT_FOLLOWUP_CHARS on purpose: below
 _KEYWORDS: dict[str, tuple[str, ...]] = {
     "fitness": ("gym", "workout", "workouts", "deadlift", "deadlifts", "squat", "squats",
                 "bench press", "treadmill", "cardio", "reps", "build muscle", "hypertrophy"),
+    "diet": ("diet", "diets", "meal", "meals", "nutrition", "macros", "calorie",
+             "calories", "protein"),
     "email": ("email", "emails", "e-mail", "inbox", "gmail", "mail"),
     "calendar": ("calendar", "meeting", "meetings", "appointment", "appointments", "reschedule"),
     "code": ("github", "repo", "repos", "repository", "pull request", "python", "traceback"),
@@ -105,6 +109,7 @@ _PROMPT = """Classify the user's message for a personal assistant. Intents:
 - code: GitHub, PRs, issues, repos, programming help, running code
 - research: questions needing web search / reading sources / comparisons
 - fitness: gym training, workout plans, exercises, logging a workout, body/weight goals, cardio
+- diet: meal plans, what to eat, calories/macros/protein targets, dietary preferences, nutrition
 - memory: asking the assistant to remember/forget/recall things about the user
 - task: file operations, reminders, todos, misc actions
 - chat: everything else (small talk, opinions, quick answers)

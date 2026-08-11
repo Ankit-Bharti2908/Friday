@@ -177,9 +177,9 @@ async def forget_matching(query: str) -> str:
         finally:
             conn.close()
         return (
-            f"Forgot ALL long-term memories ({n} erased). Note: the fitness "
-            "profile/plan files are separate — for a full reset also call "
-            "delete_fitness_data."
+            f"Forgot ALL long-term memories ({n} erased). Note: the fitness and "
+            "diet files are separate — for a full reset also call "
+            "delete_fitness_data and delete_diet_data."
         )
 
     vec = await _embed_safe(query)
@@ -300,8 +300,9 @@ _EXTRACT_PROMPT = """You maintain long-term memory for a personal assistant.
 From the exchange below, extract AT MOST 2 durable facts worth remembering for
 months (stable preferences, personal/work facts, ongoing projects, future events).
 Do NOT extract: one-off requests, transient tasks, body stats or measurements,
-fitness-intake answers, workout/plan contents (the fitness profile file owns
-those), process notes ("user needs to provide X"), or anything already obvious.
+fitness/diet-intake answers, workout or meal plan contents (the fitness and
+diet profile files own those), process notes ("user needs to provide X"), or
+anything already obvious.
 kind must be one of: fact, preference, project, event. Usually 0 items is correct.
 
 Examples of GOOD memories (durable, about the person):
@@ -328,7 +329,7 @@ _TRANSIENT_RE = re.compile(
     r"|needs?\s+to\s+(?:provide|specify|share|confirm|complete|answer|decide|clarify)\b"
     r"|is\s+(?:asking|requesting|inquiring)\b"
     r"|(?:is\s+(?:starting|beginning)|(?:wants?|would\s+like)\s+to\s+(?:start|create|make|begin|set\s+up|build|get))"
-    r"(?=.{0,60}\b(?:plan|profile|intake|routine|program|questionnaire|assessment)\b)"
+    r"(?=.{0,60}\b(?:plan|profile|intake|routine|program|questionnaire|assessment|diet)\b)"
     r")",
     re.IGNORECASE,
 )
@@ -351,10 +352,10 @@ async def after_turn(messages: list[Any], agent_name: str = "") -> None:
             return
         log_turn(user_text)
 
-        if agent_name == "gym":
-            # Fitness data lives in memory/fitness/PROFILE.md; the gym agent
-            # explicitly `remember`s its own one-line summary. Auto-extraction
-            # here only produces stat fragments that go stale.
+        if agent_name in ("gym", "diet"):
+            # Fitness/diet data lives in memory/fitness/ and memory/nutrition/;
+            # those agents explicitly `remember` their own one-line summaries.
+            # Auto-extraction here only produces stat fragments that go stale.
             return
 
         exchange = f"USER: {user_text[:800]}\nASSISTANT: {str(ai_text)[:800]}"

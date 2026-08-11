@@ -60,6 +60,7 @@ core/              The engine. No business logic about "email" or "calendar" liv
   tools.py           Loads MCP servers from config/mcp.json into LangChain tools.
   memory.py          Long-term memory (vector + keyword), daily notes, extraction hook.
   fitness.py         Gym-trainer data layer: profile/plan/log markdown + tools + today's session.
+  nutrition.py       Diet-planner data layer: profile + per-day meal plans + tools + today's plan.
   skills.py          Markdown "skills" — workflow snippets injected when matched.
   notify.py          Outbound owner notifications with quiet-hours queueing.
   scheduler.py       APScheduler cron jobs (briefing, heartbeat, consolidation).
@@ -68,10 +69,10 @@ core/              The engine. No business logic about "email" or "calendar" liv
 agents/            The modular "subagent" system. Each profile = tier + tools + instructions.
   _base.py           AgentProfile dataclass (frozen).
   registry.py        PROFILES map + filter_tools() + ALWAYS_INCLUDE set.
-  email.py / research.py / coder.py / calendar_agent.py / gym.py   The five specialists.
+  email.py / research.py / coder.py / calendar_agent.py / gym.py / diet.py  The six specialists.
   briefing.py        08:00 morning briefing (agentic pass, read-only).
   heartbeat.py       Every 30 min proactive check (autonomous graph, dedup'd alerts).
-                     (gym.py also carries the daily workout alert job.)
+                     (gym.py and diet.py also carry their daily alert jobs.)
 
 channels/          Gateways. All share the same graph; they differ only in I/O + approval UX.
   telegram.py        Primary. Long-poll, inline Approve/Reject/Edit buttons, voice notes.
@@ -86,9 +87,11 @@ identity/          Friday's personality & knowledge, as editable markdown (no re
   USER.md            Who Friday works for (the owner's facts/preferences).
   HEARTBEAT.md       The proactive checklist the heartbeat job runs.
 
-skills/            *.md workflow snippets (email_style, daily_note_format, fitness_intake, gym_program_design).
+skills/            *.md workflow snippets (email_style, daily_note_format, fitness_intake,
+                   gym_program_design, diet_intake, diet_day_plan).
 config/            models.json (tiers), policies.json (approval rules), mcp.json (servers).
-memory/            MEMORY.md (human-readable mirror of the DB) + notes/ (daily logs).
+memory/            MEMORY.md (human-readable mirror of the DB) + notes/ (daily logs)
+                   + fitness/ (profile, plan, log) + nutrition/ (profile, days/).
 tests/             smoke.py (offline) + eval_routing.py (needs a live fast tier).
 scripts/           backup.sh — the whole brain is this folder; zip it nightly.
 ```
@@ -223,7 +226,7 @@ are deliberately excluded), and `skip_classify()` skips the LLM outright for
 sub-25-char keywordless follow-ups inside a specialist flow ("yes", "??" — they
 would stick anyway). Everything else falls through to `classify()`:
 a cheap structured classification on the **fast** tier into one of
-`email · calendar · code · research · fitness · memory · task · chat`, with a
+`email · calendar · code · research · fitness · diet · memory · task · chat`, with a
 `confidence` score. `INTENT_TO_PROFILE` maps intents to profiles; **`memory`/`task`/`chat` all
 fold into `general`**. `resolve_profile()` then applies **sticky routing** against the
 previous turn's checkpointed profile: below `CONFIDENCE_FLOOR = 0.6` (or on classifier
@@ -243,6 +246,7 @@ class AgentProfile:
     description: str
     tier: str = "standard"                  # which LLM tier this agent uses
     tool_keywords: tuple[str, ...] | None   # substring filter over tool names
+    tool_exclude: tuple[str, ...] = ()      # exact names dropped after matching
     instructions: str = ""                  # injected into the system prompt
 ```
 
@@ -254,11 +258,16 @@ class AgentProfile:
 | coder     | standard | github, git, repo, pull, issue, commit, file, python | PRs / issues / code |
 | research  | **deep** | search, fetch, web, browse, read, url, http          | multi-step web research |
 | gym       | standard | fitness, workout, exercise, gym, cardio, health      | intake / plans / coaching |
+| diet      | standard | diet, meal, nutrition, fitness, workout              | intake / targets / day menus |
 
 `registry.filter_tools()` keeps a tool if its name contains any profile keyword
 **or** it's in `ALWAYS_INCLUDE = {remember, recall_memories, forget, run_python}`.
 If the filter would leave no domain-specific tools, it **falls back to all tools**
 (so calendar still works even before a calendar MCP server is configured).
+`tool_exclude` is subtracted first and **survives that fallback** — substring
+keywords are coarse, so the diet agent (`fitness`, `workout`) would otherwise
+inherit `save_workout_plan` / `update_fitness_profile`; it reads the training
+side and never writes it. Not having the tool beats a prompt rule saying don't.
 
 **Adding a subagent = one file** exporting `PROFILE`, plus one import line in
 `registry.py`. No graph changes.
@@ -311,7 +320,8 @@ no code change.
 
 ## 7. Tools: MCP, memory, sandbox
 
-Friday's full toolset = **MCP tools + memory tools + fitness tools + `run_python`**.
+Friday's full toolset = **MCP tools + memory tools + fitness tools + nutrition
+tools + `run_python`**.
 
 ### MCP (`core/tools.py` + `config/mcp.json`)
 Claude-Desktop-style server config. Conventions:
@@ -340,7 +350,21 @@ replaced versions archived to `history/`) are the source of truth and stay
 human-editable. Reads and the log append run free; profile/plan saves pause for
 approval — the trainer proposes, the owner approves. `PLAN.md` holds one
 `## <Weekday>` section per day; `todays_session()` extracts today's section for
-the daily alert without any LLM call.
+the daily alert without any LLM call. `delete_fitness_data` is the archive-then-
+delete reset behind "start over".
+
+### Nutrition tools (`core/nutrition.py`)
+The diet planner's data layer: `get_/update_diet_profile`, `get_/save_diet_plan`,
+`get_recent_diet_plans`, `delete_diet_data`. Same posture as fitness (reads free,
+saves pause, replaced files archived to `history/`), with one structural
+difference: **a diet plan is a one-day document**, stored as
+`memory/nutrition/days/<YYYY-MM-DD>.md`, so the date is the filename and there is
+no weekly file to parse. `resolve_date()` accepts only `today`/`tomorrow`/
+`yesterday`/`YYYY-MM-DD` — anything else is an error, never a guess, because the
+value becomes a path. `todays_plan()` feeds the daily alert with no LLM call.
+The diet profile carries the computed targets (kcal/protein/fat/carbs/fiber/
+water); stats and training goals stay in the *fitness* profile, which the diet
+agent reads rather than duplicating.
 
 ### Sandbox (`core/sandbox.py`)
 `run_python(code)` runs in a throwaway `python:3.12-slim` Docker container with
@@ -421,13 +445,16 @@ agents: email                            # or "all", or blank
 Matched when **any trigger substring is in the message** *or* **the active profile
 is listed in `agents`** (`all` = every profile). Files are **re-read on every
 match** — edit a skill and behavior changes on the very next message, no restart.
-Ships with `email_style`, `daily_note_format`, `fitness_intake`, `gym_program_design`.
+Ships with `email_style`, `daily_note_format`, `fitness_intake`,
+`gym_program_design`, `diet_intake`, `diet_day_plan`.
 
 This is the lightweight alternative to hardcoding workflows: prompt-level behavior
-lives in editable text, versioned alongside the code. The gym agent leans on this
-hardest: its entire domain knowledge — the intake questionnaire + level rubric
-(`fitness_intake`) and the programming rules (`gym_program_design`) — is skill
-markdown, so coaching behavior is tunable without touching Python.
+lives in editable text, versioned alongside the code. The gym and diet agents lean
+on this hardest: their entire domain knowledge — the intake questionnaire + level
+rubric (`fitness_intake`), the programming rules (`gym_program_design`), the
+nutrition screen + target math (`diet_intake`) and the menu rules
+(`diet_day_plan`) — is skill markdown, so coaching behavior is tunable without
+touching Python.
 
 ---
 
@@ -439,6 +466,7 @@ jobstore needed):
 | Time (IST)        | Job | What it does |
 |-------------------|-----|--------------|
 | 06:30 (`FRIDAY_WORKOUT_ALERT`) | `workout` | Sends today's `## <Weekday>` section of `memory/fitness/PLAN.md` — **pure file read, no LLM**. Deduped per day via `alerts_sent` (`workout:<date>`); silent if there's no plan or no section for today. Urgent (bypasses quiet hours) since the owner scheduled it deliberately. Empty env value disables. |
+| 07:00 (`FRIDAY_DIET_ALERT`) | `diet` | Sends `memory/nutrition/days/<today>.md` — **pure file read, no LLM**. Deduped per day (`diet:<date>`); silent on days with no saved plan, which is the normal state until the owner plans one. Same urgent + empty-disables semantics as the workout alert. |
 | 08:00             | `briefing` | One agentic pass through the **main graph** (read-only via auto-resolve): calendar + unread email triage + GitHub + yesterday's open loops → ≤15 lines to the owner. Missing integrations silently skip. |
 | 07:35             | `flush` | Sends any messages queued during quiet hours. |
 | */30, 08–22       | `heartbeat` | Runs `HEARTBEAT.md` checklist on the **autonomous graph** (read-only by construction). Emits a strict JSON array of `{key, message}` findings; `alerts_sent` table **dedupes by key** so the same item never pings twice. Most runs are silent. |

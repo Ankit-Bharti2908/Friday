@@ -42,6 +42,10 @@ TIMEZONE = os.getenv("FRIDAY_TZ", "Asia/Kolkata")
 # Sent urgent (bypasses quiet hours) — an alarm the owner set on purpose.
 WORKOUT_ALERT_TIME: str = os.getenv("FRIDAY_WORKOUT_ALERT", "06:30").strip()
 
+# Daily diet alert, same contract. Only fires on days that HAVE a saved meal
+# plan (memory/nutrition/days/<date>.md), so default-on costs nothing.
+DIET_ALERT_TIME: str = os.getenv("FRIDAY_DIET_ALERT", "07:00").strip()
+
 # WhatsApp (optional; needs the bridge/whatsapp Node sidecar running)
 WHATSAPP_ENABLED: bool = os.getenv("WHATSAPP_ENABLED", "0") in ("1", "true", "yes")
 WHATSAPP_OWNER_JID: str = os.getenv("WHATSAPP_OWNER_JID", "")  # e.g. 9198xxxxxxxx@s.whatsapp.net

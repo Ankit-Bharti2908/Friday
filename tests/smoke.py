@@ -8,8 +8,9 @@ resolution, duplicate-tool-call detection, skills parsing/matching, agent
 registry tool filtering, memory store/recall/forget with injected vectors
 (+ exact-text dedupe, forget-all on a temp db, transient-extraction filter),
 approval preview rendering, fitness profile/plan/log round-trip (+ today's-
-section parsing + state-aware sentinels + full reset), heartbeat parsing,
-notify quiet-hours math.
+section parsing + state-aware sentinels + full reset), nutrition profile/
+day-plan round-trip (+ date resolution + sentinels + full reset), heartbeat
+parsing, notify quiet-hours math.
 """
 from __future__ import annotations
 
@@ -44,9 +45,15 @@ def test_policies() -> None:
     assert approval.requires_approval("update_fitness_profile")
     assert not approval.requires_approval("get_todays_workout")
     assert not approval.requires_approval("record_workout")
+    # diet: same posture — proposals pause, reads run free
+    assert approval.requires_approval("save_diet_plan")
+    assert approval.requires_approval("update_diet_profile")
+    assert not approval.requires_approval("get_diet_plan")
+    assert not approval.requires_approval("get_recent_diet_plans")
     # destructive resets must pause (forget via default-deny, delete_ via pattern)
     assert approval.requires_approval("forget")
     assert approval.requires_approval("delete_fitness_data")
+    assert approval.requires_approval("delete_diet_data")
     print("policies          OK")
 
 
@@ -106,7 +113,10 @@ def test_keyword_prerouter() -> None:
     assert keyword_intent("any important emails today?") == "email"
     assert keyword_intent("is there any meeting conflict on friday afternoon?") == "calendar"
     assert keyword_intent("summarize PR #42 in the friday repo") == "code"
+    assert keyword_intent("make me a diet plan for cutting") == "diet"
+    assert keyword_intent("how many calories in two rotis?") == "diet"
     assert keyword_intent("email me my workout plan") is None       # two domains collide
+    assert keyword_intent("plan my meals around tomorrow's workout") is None  # diet+fitness collide
     assert keyword_intent("what do you think about the new office policy") is None
     assert keyword_intent("benchmark this function for me") is None  # word boundary, not substring
     assert keyword_intent("") is None
@@ -180,7 +190,8 @@ def test_prompt_and_skills() -> None:
 
     all_skills = skills.load_all()
     assert {s.name for s in all_skills} >= {
-        "email_style", "daily_note_format", "fitness_intake", "gym_program_design"
+        "email_style", "daily_note_format", "fitness_intake", "gym_program_design",
+        "diet_intake", "diet_day_plan",
     }
     hit = skills.match("build me a workout plan for the week", "general")
     assert any(s.name == "gym_program_design" for s in hit)
@@ -189,6 +200,9 @@ def test_prompt_and_skills() -> None:
     gym_skills = {s.name for s in skills.match("anything at all", "gym")}
     assert {"fitness_intake", "gym_program_design"} <= gym_skills  # always with the gym agent
     assert any(s.name == "fitness_intake" for s in skills.match("i want to get fit", "general"))
+    diet_skills = {s.name for s in skills.match("anything at all", "diet")}
+    assert {"diet_intake", "diet_day_plan"} <= diet_skills  # always with the diet agent
+    assert any(s.name == "diet_day_plan" for s in skills.match("what should i eat today", "general"))
     rendered = skills.render(hit)
     assert "Skill: gym_program_design" in rendered
     print("prompt + skills   OK")
@@ -211,6 +225,22 @@ def test_registry_filtering() -> None:
     gym_names = {t.name for t in gym_tools}
     assert {"save_workout_plan", "get_fitness_profile"} <= gym_names
     assert "gmail_send_email" not in gym_names
+    # diet agent sees its own tools AND the fitness reads it plans around
+    diet_tools = registry.filter_tools(
+        registry.get("diet"),
+        tools + [fake("save_diet_plan"), fake("get_fitness_profile"), fake("get_todays_workout")],
+    )
+    diet_names = {t.name for t in diet_tools}
+    assert {"save_diet_plan", "get_fitness_profile", "get_todays_workout"} <= diet_names
+    assert "gmail_send_email" not in diet_names
+    # …but tool_exclude keeps it out of the gym's writes despite the keyword match
+    excluded = registry.filter_tools(
+        registry.get("diet"), tools + [fake("save_workout_plan"), fake("update_fitness_profile")]
+    )
+    assert not {"save_workout_plan", "update_fitness_profile"} & {t.name for t in excluded}
+    # exclusion survives the no-domain-tools fallback (which returns everything else)
+    fallback = registry.filter_tools(registry.get("diet"), [fake("save_workout_plan"), fake("remember")])
+    assert {t.name for t in fallback} == {"remember"}
     print("registry filter   OK")
 
 
@@ -262,7 +292,8 @@ def test_forget_all() -> None:
             await memory.add_memory("Smoke test fact two", "fact", _vec=[-0.2] * dim)
             gone = await memory.forget_matching("Everything!")   # normalization too
             assert gone.startswith("Forgot ALL") and "2 erased" in gone
-            assert "delete_fitness_data" in gone                 # points at the file reset
+            # points at BOTH file resets (fitness + diet live outside the db)
+            assert "delete_fitness_data" in gone and "delete_diet_data" in gone
             assert await memory.recall("smoke test fact", _vec=[0.2] * dim) == []
 
         asyncio.run(flow())
@@ -277,11 +308,13 @@ def test_transient_filter() -> None:
 
     assert _looks_transient("User has not specified fitness goals or workout preferences yet.")
     assert _looks_transient("User wants to start a new workout plan")
+    assert _looks_transient("User wants to start a new diet")
     assert _looks_transient("User needs to provide fitness profile information for workout plan creation")
     assert _looks_transient("User is asking for a summary of unread email")
     # durable facts these arms must NOT kill
     assert not _looks_transient("User wants to start training for a marathon")
     assert not _looks_transient("User has not eaten meat since 2019")
+    assert not _looks_transient("User is vegetarian and allergic to peanuts")
     assert not _looks_transient("User is starting a new job at Google in September")
     assert not _looks_transient("User's manager is Sandeep")
     print("transient filter  OK")
@@ -300,6 +333,16 @@ def test_render_preview() -> None:
     )
     assert mail.startswith("1. gmail_send_email")
     assert "chars total" in mail and len(mail) < 1500   # multi-arg stays JSON at 1200
+    # content tool with a short scalar extra: still plain text, extra in the header
+    day = "## Breakfast — 8:30\n- eggs 3 — ~210 kcal, 19 g protein\n" * 40
+    out = approval.render_preview(
+        [{"name": "save_diet_plan", "args": {"content": day, "date": "2026-08-11"}}]
+    )
+    assert "save_diet_plan · content" in out and "date='2026-08-11'" in out
+    assert "\\n" not in out and "## Breakfast" in out
+    # empty extras stay out of the header
+    out2 = approval.render_preview([{"name": "save_diet_plan", "args": {"content": day, "date": ""}}])
+    assert "date=" not in out2
     print("render preview    OK")
 
 
@@ -358,6 +401,64 @@ def test_fitness_roundtrip() -> None:
     print("fitness roundtrip OK")
 
 
+def test_nutrition_roundtrip() -> None:
+    import tempfile
+    from pathlib import Path
+
+    from core import nutrition
+
+    tmp = Path(tempfile.mkdtemp(prefix="friday-nutrition-smoke-"))
+    nutrition.NUTRITION_DIR = tmp
+    nutrition.PROFILE_PATH = tmp / "PROFILE.md"
+    nutrition.DAYS_DIR = tmp / "days"
+    nutrition.HISTORY_DIR = tmp / "history"
+
+    assert nutrition.get_diet_profile.invoke({}) == nutrition.NO_DIET_PROFILE
+    # no profile + no day file -> intake sentinel for that date
+    out = nutrition.get_diet_plan.invoke({})
+    assert "no diet profile" in out and "diet_intake" in out
+    # junk dates are refused, never guessed — they become filenames
+    assert nutrition.get_diet_plan.invoke({"date": "next tuesday"}).startswith("ERROR")
+    assert nutrition.save_diet_plan.invoke({"content": "# x", "date": "2026-13-40"}).startswith("ERROR")
+
+    nutrition.update_diet_profile.invoke(
+        {"content": "# Diet profile\n- pattern: vegetarian + eggs\n- targets: 2200 kcal, 130 g protein"}
+    )
+    assert "vegetarian" in nutrition.get_diet_profile.invoke({})
+    # profile exists but no plan for the day -> design sentinel gates the save
+    out = nutrition.get_diet_plan.invoke({"date": "today"})
+    assert "diet profile EXISTS" in out and "save_diet_plan" in out and "diet_day_plan" in out
+
+    day = (
+        "# Monday — training day\n"
+        "## Breakfast — 8:30\n- poha 1 katori + 2 eggs — ~350 kcal, 16 g protein\n"
+        "## Lunch — 13:30\n- dal 2 katori, rice, curd — ~600 kcal, 28 g protein\n"
+        "## Dinner — 21:00\n- paneer 100 g + 2 rotis — ~550 kcal, 26 g protein\n"
+        "## Totals\n- ~2200 kcal · 130 g protein / target 130 g"
+    )
+    result = nutrition.save_diet_plan.invoke({"content": day})
+    assert "saved" in result and "WARNING" not in result
+    assert "poha" in nutrition.get_diet_plan.invoke({})
+    date_key, plan = nutrition.todays_plan()
+    assert plan is not None and "Breakfast" in plan
+    # re-saving the same day archives the previous version
+    nutrition.save_diet_plan.invoke({"content": day + "\n- note: swap curd for raita"})
+    assert len(list((tmp / "history").glob(f"{date_key}-*.md"))) == 1
+    # a structureless plan warns (the alert sends the file as-is)
+    assert "WARNING" in nutrition.save_diet_plan.invoke({"content": "- just a list", "date": "tomorrow"})
+
+    recent = nutrition.get_recent_diet_plans.invoke({"days": 3})
+    assert date_key in recent and "poha" in recent
+
+    # full reset: archives profile + every day file, then directs a fresh intake
+    result = nutrition.delete_diet_data.invoke({})
+    assert "PROFILE.md" in result and f"{date_key}.md" in result and "intake" in result
+    assert list((tmp / "history").glob("profile-*.md"))
+    assert nutrition.get_diet_profile.invoke({}) == nutrition.NO_DIET_PROFILE
+    assert nutrition.delete_diet_data.invoke({}) == "(no diet data to delete)"
+    print("diet roundtrip    OK")
+
+
 def test_heartbeat_parse_and_notify() -> None:
     text = 'Here you go:\n[{"key": "pr:friday#1", "message": "PR #1 awaits your review"}]'
     items = _parse_findings(text)
@@ -387,5 +488,6 @@ if __name__ == "__main__":
     test_transient_filter()
     test_render_preview()
     test_fitness_roundtrip()
+    test_nutrition_roundtrip()
     test_heartbeat_parse_and_notify()
     print("\nall smoke tests passed ✔")

@@ -20,6 +20,8 @@ memory/MEMORY.md
 memory/notes/
 # fitness profile/plan/log are personal runtime data
 memory/fitness/
+# diet profile + daily meal plans are personal runtime data
+memory/nutrition/
 
 # --- Python ---
 __pycache__/

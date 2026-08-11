@@ -5,10 +5,10 @@ code sandbox), no Postgres, no proxy servers.
 
 **What it does:** Telegram (text + voice) and optional WhatsApp/web gateways →
 intent router picks a specialist agent (email / calendar / coder / research /
-gym trainer / general) → MCP tools do the work → every risky action pauses for
-your Approve / Reject / Edit → it remembers you across sessions → 8 AM briefing,
-30-min heartbeat alerts, daily workout alert, nightly note consolidation →
-everything traced in Phoenix.
+gym trainer / diet planner / general) → MCP tools do the work → every risky
+action pauses for your Approve / Reject / Edit → it remembers you across
+sessions → 8 AM briefing, 30-min heartbeat alerts, daily workout + diet
+alerts, nightly note consolidation → everything traced in Phoenix.
 
 ## Quickstart
 
@@ -55,7 +55,8 @@ uv run python main.py            # message your bot on Telegram
 - **Profiles** (`agents/*.py`): tier + tool subset + instructions. New subagent = one small file.
 - **Skills** (`skills/*.md`): drop a markdown file with triggers; it's injected when matched.
   Re-read every message — edit a skill, behavior changes immediately. Ships with
-  `email_style`, `daily_note_format`, `fitness_intake`, `gym_program_design`.
+  `email_style`, `daily_note_format`, `fitness_intake`, `gym_program_design`,
+  `diet_intake`, `diet_day_plan`.
 - **Memory** (`core/memory.py`): SQLite + sqlite-vec is the truth, `memory/MEMORY.md` is the
   mirror. Recall is injected each turn; a post-turn hook extracts durable facts (≥0.8
   confidence); say "remember/forget X" for explicit control. Daily notes in `memory/notes/`,
@@ -65,11 +66,19 @@ uv run python main.py            # message your bot on Telegram
   your level, and proposes a 7-day plan you approve. Profile/plan/log are editable markdown
   in `memory/fitness/`; every morning (`FRIDAY_WORKOUT_ALERT`, default 06:30) it pings you
   with that day's session. Knowledge lives in `skills/fitness_intake.md` + `gym_program_design.md`.
+- **Diet planner** (`agents/diet.py` + `core/nutrition.py`): say "make me a diet plan" — it
+  interviews you (eating pattern, allergies, cuisine, budget, medical screen), derives daily
+  calorie/macro targets showing the math, then plans ONE day's meals at a time around that
+  day's workout. Profile + day plans are markdown in `memory/nutrition/`; each morning
+  (`FRIDAY_DIET_ALERT`, default 07:00) it sends today's saved menu — silent on unplanned
+  days. Knowledge lives in `skills/diet_intake.md` + `diet_day_plan.md`.
 - **Reflection:** two consecutive tool failures trigger a forced critique-and-change-approach.
 - **Proactivity** (`core/scheduler.py`): briefing 08:00, heartbeat every 30 min 08–22 (runs
   `identity/HEARTBEAT.md` on the read-only autonomous graph; findings deduped via `alerts_sent`
   so nothing pings twice), workout alert at `FRIDAY_WORKOUT_ALERT` (no LLM — sends today's
-  section of `memory/fitness/PLAN.md`, deduped per day), quiet-hours queue flushed 07:35.
+  section of `memory/fitness/PLAN.md`, deduped per day), diet alert at `FRIDAY_DIET_ALERT`
+  (no LLM — sends `memory/nutrition/days/<today>.md` when it exists), quiet-hours queue
+  flushed 07:35.
 
 ## Safety model (don't weaken these)
 1. Channel allowlists are hardcoded to you (Telegram user id, WhatsApp JID).
@@ -105,12 +114,12 @@ through to the next entry, so cloud keys remain a safe optional backstop.
 
 ## Layout
 ```
-core/      settings · db · llm · prompts · approval · tools · graph · router · skills · memory · fitness · notify · scheduler · sandbox
-agents/    registry + profiles (email, research, coder, calendar, gym) · briefing · heartbeat
+core/      settings · db · llm · prompts · approval · tools · graph · router · skills · memory · fitness · nutrition · notify · scheduler · sandbox
+agents/    registry + profiles (email, research, coder, calendar, gym, diet) · briefing · heartbeat
 channels/  telegram · cli · whatsapp · web
 bridge/    whatsapp/ (Baileys Node sidecar)
 identity/  SOUL.md · USER.md · HEARTBEAT.md      skills/  *.md
-memory/    MEMORY.md (mirror) · notes/ · fitness/ config/  models · mcp · policies
+memory/    MEMORY.md (mirror) · notes/ · fitness/ · nutrition/   config/  models · mcp · policies
 tests/     smoke · routing_cases · eval_routing   scripts/ backup.sh
 ```
 

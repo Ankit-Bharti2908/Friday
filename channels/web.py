@@ -26,6 +26,7 @@ from core.db import init_db
 from core.fitness import fitness_tools
 from core.graph import build_graph, last_ai_text
 from core.memory import memory_tools
+from core.nutrition import nutrition_tools
 from core.sandbox import sandbox_tools
 from core.tools import load_mcp_tools
 
@@ -48,7 +49,7 @@ async def _get_graph():
     async with _init_lock:
         if _graph is None:
             init_db()
-            tools = await load_mcp_tools() + memory_tools() + sandbox_tools() + fitness_tools()
+            tools = await load_mcp_tools() + memory_tools() + sandbox_tools() + fitness_tools() + nutrition_tools()
             _saver_cm = AsyncSqliteSaver.from_conn_string(str(settings.DB_PATH))
             saver = await _saver_cm.__aenter__()
             _graph = build_graph(saver, tools)
